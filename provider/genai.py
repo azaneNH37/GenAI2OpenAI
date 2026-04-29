@@ -240,27 +240,30 @@ def stream_genai_response_with_tools(chat_info, messages, model, max_tokens, con
 
         buffer += content
 
-        tag_pos = buffer.find(OPEN_TAG)
-        if tag_pos >= 0:
-            pre = buffer[:tag_pos]
-            if pre.strip():
-                yield emit_text(pre)
+        while True:
+            tag_pos = buffer.find(OPEN_TAG)
+            if tag_pos >= 0:
+                pre = buffer[:tag_pos]
+                if pre:
+                    yield emit_text(pre)
 
-            tool_detected = True
-            tool_buffer = buffer[tag_pos:]
-            buffer = ""
-            continue
+                tool_detected = True
+                tool_buffer = buffer[tag_pos:]
+                buffer = ""
+                break
 
-        plen = _tag_prefix_len(buffer, OPEN_TAG)
-        if plen > 0:
-            safe = buffer[:-plen]
-            if safe:
-                yield emit_text(safe)
-            buffer = buffer[-plen:]
-        else:
+            plen = _tag_prefix_len(buffer, OPEN_TAG)
+            if plen > 0:
+                safe = buffer[:-plen]
+                if safe:
+                    yield emit_text(safe)
+                buffer = buffer[-plen:]
+                break
+
             if buffer:
                 yield emit_text(buffer)
             buffer = ""
+            break
 
     if tool_detected:
         tool_calls, remaining = extract_tool_calls(tool_buffer)
@@ -270,6 +273,10 @@ def stream_genai_response_with_tools(chat_info, messages, model, max_tokens, con
 
             if remaining and remaining.strip():
                 yield emit_text(remaining.strip())
+
+            if buffer:
+                yield emit_text(buffer)
+                buffer = ""
 
             if not sent_role:
                 yield make_chunk({"role": "assistant"})

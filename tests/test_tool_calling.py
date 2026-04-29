@@ -14,6 +14,9 @@ import argparse
 import json
 import requests
 import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--base-url', default='http://localhost:5000')
@@ -79,6 +82,24 @@ SEARCH_TOOL = {
                 }
             },
             "required": ["query"]
+        }
+    }
+}
+
+READ_FILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_file",
+        "description": "Read the contents of a local file",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute path to the file"
+                }
+            },
+            "required": ["path"]
         }
     }
 }
@@ -389,6 +410,63 @@ def test_stream_no_tool_needed():
         return False
 
 
+def test_local_file_tool_call():
+    """测试 8: 本地文件读取 tool call"""
+    print_separator("Test 8: Local File Tool Call")
+
+    target_path = Path(__file__).resolve()
+    prompt = (
+        "Read the file at the given path and return only the first line. "
+        f"Path: {target_path}"
+    )
+
+    resp = requests.post(f"{BASE_URL}/v1/chat/completions", json={
+        "model": MODEL,
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
+        "tools": [READ_FILE_TOOL],
+        "stream": False
+    })
+
+    data = resp.json()
+    print(json.dumps(data, indent=2, ensure_ascii=False))
+
+    choice = data.get("choices", [{}])[0]
+    msg = choice.get("message", {})
+    tool_calls = msg.get("tool_calls") or []
+    if not tool_calls:
+        print("\n[FAIL] No tool calls in response")
+        return False
+
+    tc = tool_calls[0]
+    args_raw = tc.get("function", {}).get("arguments", "{}")
+    try:
+        args = json.loads(args_raw)
+    except json.JSONDecodeError:
+        args = {}
+
+    path_arg = args.get("path", "")
+    print(f"  tool_call: {tc['function']['name']}({args_raw})")
+    if tc.get("function", {}).get("name") != "read_file":
+        print("\n[FAIL] Tool name mismatch")
+        return False
+
+    if not path_arg:
+        print("\n[FAIL] Missing path argument")
+        return False
+
+    if "\\" in path_arg and "\\\\" in path_arg:
+        print("\n[WARN] Detected double-escaped backslashes in path")
+
+    if not Path(path_arg).exists():
+        print(f"\n[FAIL] Path does not exist: {path_arg}")
+        return False
+
+    print("\n[PASS] Tool call includes valid existing path")
+    return True
+
+
 def test_tag_prefix_detection():
     """测试 7: _tag_prefix_len 单元测试（离线，不需要服务器）"""
     print_separator("Test 7: Tag Prefix Detection (Unit Test)")
@@ -452,6 +530,7 @@ if __name__ == '__main__':
         ("no_tool_needed", test_no_tool_needed),
         ("stream_tool_call", test_stream_tool_call),
         ("stream_no_tool_needed", test_stream_no_tool_needed),
+        ("local_file_tool_call", test_local_file_tool_call),
     ]
 
     for name, fn in tests:

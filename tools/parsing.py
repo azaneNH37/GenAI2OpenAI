@@ -10,15 +10,68 @@ def strip_think_blocks(content):
     return re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
 
 
+def _escape_invalid_backslashes(text):
+    out = []
+    in_string = False
+    escape = False
+
+    for i, ch in enumerate(text):
+        if not in_string:
+            if ch == '"':
+                in_string = True
+            out.append(ch)
+            continue
+
+        if escape:
+            out.append(ch)
+            escape = False
+            continue
+
+        if ch == '\\':
+            next_ch = text[i + 1] if i + 1 < len(text) else ""
+            if next_ch in ('"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u'):
+                out.append(ch)
+                escape = True
+            else:
+                out.append('\\\\')
+            continue
+
+        if ch == '"':
+            in_string = False
+            out.append(ch)
+            continue
+
+        out.append(ch)
+
+    return "".join(out)
+
+
+def _try_load_json(raw):
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    repaired = _escape_invalid_backslashes(raw)
+    if repaired != raw:
+        try:
+            return json.loads(repaired)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    return None
+
+
 def _parse_tool_call_body(raw):
     raw = raw.strip()
 
-    try:
-        call = json.loads(raw)
-        if "name" in call:
-            return call
-    except (json.JSONDecodeError, ValueError):
-        pass
+    call = _try_load_json(raw)
+    if isinstance(call, dict) and "name" in call:
+        if isinstance(call.get("arguments"), str):
+            parsed_args = _try_load_json(call["arguments"])
+            if isinstance(parsed_args, dict):
+                call["arguments"] = parsed_args
+        return call
 
     name_m = re.search(r'<name>\s*(.*?)\s*</name>', raw, re.DOTALL)
     args_m = re.search(r'<arguments>\s*(.*?)\s*</arguments>', raw, re.DOTALL)
@@ -27,9 +80,10 @@ def _parse_tool_call_body(raw):
         arguments = {}
         if args_m:
             args_str = args_m.group(1).strip()
-            try:
-                arguments = json.loads(args_str)
-            except (json.JSONDecodeError, ValueError):
+            parsed_args = _try_load_json(args_str)
+            if isinstance(parsed_args, dict):
+                arguments = parsed_args
+            else:
                 arguments = {"raw": args_str}
         return {"name": name, "arguments": arguments}
 
