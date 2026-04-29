@@ -73,6 +73,7 @@ def chat_completions():
 
         else:
             complete_content = ""
+            complete_reasoning = ""
             for line in stream_genai_response(chat_info, messages, model, max_tokens, config):
                 if line.startswith('data: '):
                     data_str = line[6:].strip()
@@ -83,8 +84,11 @@ def chat_completions():
                         if 'choices' in data and data['choices']:
                             delta = data['choices'][0].get('delta', {})
                             content = delta.get('content', '')
+                            reasoning = data.get('reasoning') or delta.get('reasoning_content', '')
                             if content:
                                 complete_content += content
+                            if reasoning:
+                                complete_reasoning += reasoning
                     except json.JSONDecodeError:
                         pass
 
@@ -101,12 +105,16 @@ def chat_completions():
                     "content": remaining_text,
                     "tool_calls": tool_calls
                 }
+                if complete_reasoning:
+                    message_obj["reasoning_content"] = complete_reasoning
                 finish_reason = "tool_calls"
             else:
                 message_obj = {
                     "role": "assistant",
                     "content": complete_content
                 }
+                if complete_reasoning:
+                    message_obj["reasoning_content"] = complete_reasoning
                 finish_reason = "stop"
 
             response = {

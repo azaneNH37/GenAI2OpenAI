@@ -231,6 +231,9 @@ def stream_genai_response_with_tools(chat_info, messages, model, max_tokens, con
             continue
         chunk_delta = data["choices"][0].get("delta", {})
         content = chunk_delta.get("content", "")
+        reasoning = chunk_delta.get("reasoning") or chunk_delta.get("reasoning_content", "")
+        if reasoning:
+            yield make_chunk({"reasoning_content": reasoning})
         if not content:
             continue
 
