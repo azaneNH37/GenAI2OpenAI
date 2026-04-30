@@ -300,18 +300,18 @@ GenAI2OpenAI/
 
 以下模型已注册静态规格，支持别名查找和适配器自动选择。未注册的模型会自动透传至 GenAI 平台。
 
-| 模型 ID             | GenAI 平台 ID | 后端       | 工具适配器 | 推理链 | 别名             |
-| ------------------- | ------------- | ---------- | ---------- | ------ | ---------------- |
-| `glm-5.1`           | chatglm       | xinference | glm        | —      | `glm`, `chatglm` |
-| `gpt-4.1`           | GPT-4.1       | azure      | generic    | —      | `gpt4.1`         |
-| `gpt-4.1-mini`      | GPT-4.1-mini  | azure      | generic    | —      |                  |
-| `gpt-o4-mini`       | o4-mini       | azure      | generic    | —      |                  |
-| `gpt-o3`            | o3            | azure      | generic    | ✓      |                  |
-| `deepseek-v4-flash` | deepseek-chat | xinference | generic    | ✓      | `deepseek`       |
-| `deepseek-v4-pro`   | deepseek-pro  | xinference | generic    | ✓      |                  |
-| `qwen-instruct`     | qwen-instruct | xinference | generic    | ✓      | `qwen`           |
-| `minimax-m1`        | MiniMax-M1    | xinference | generic    | ✓      |                  |
-| `gpt-5.5`           | GPT-5.5       | azure      | generic    | ✓      |                  |
+| 模型 ID             | GenAI 平台 ID | 工具适配器 | 别名             |
+| ------------------- | ------------- | ---------- | ---------------- |
+| `glm-5.1`           | chatglm       | glm        | `glm`, `chatglm` |
+| `gpt-4.1`           | GPT-4.1       | generic    | `gpt4.1`         |
+| `gpt-4.1-mini`      | GPT-4.1-mini  | generic    |                  |
+| `gpt-o4-mini`       | o4-mini       | generic    |                  |
+| `gpt-o3`            | o3            | generic    |                  |
+| `deepseek-v4-flash` | deepseek-chat | generic    | `deepseek`       |
+| `deepseek-v4-pro`   | deepseek-pro  | generic    |                  |
+| `qwen-instruct`     | qwen-instruct | generic    | `qwen`           |
+| `minimax-m1`        | MiniMax-M1    | generic    |                  |
+| `gpt-5.5`           | GPT-5.5       | generic    |                  |
 
 > 模型列表也会通过 `GET /v1/models` 从 GenAI 平台动态拉取，上表为静态注册的已知模型。
 
@@ -326,9 +326,6 @@ uv run tests/test_responses.py --model GPT-4.1
 
 # 错误处理与健康检查测试
 uv run tests/test_errors.py
-
-# reasoning_content 捕获测试
-uv run tests/test_reasoning_capture.py --model deepseek-v4-flash
 ```
 
 ## 许可
