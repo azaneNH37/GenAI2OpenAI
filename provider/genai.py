@@ -13,7 +13,7 @@ from model_config.registry import (
     resolve_model,
     supports_reasoning,
 )
-from tools.parsing import _tag_prefix_len
+from tools.parsing import tag_prefix_len
 
 logger = logging.getLogger(__name__)
 
@@ -305,7 +305,7 @@ def stream_genai_response_with_tools(
                 buffer = ""
                 break
 
-            plen = _tag_prefix_len(buffer, open_tag)
+            plen = tag_prefix_len(buffer, open_tag)
             if plen > 0:
                 safe = buffer[:-plen]
                 if safe:

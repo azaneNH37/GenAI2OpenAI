@@ -36,7 +36,7 @@ def normalize_whitespace_around_tags(content):
     return re.sub(r'<tool_call>\s*(.*?)\s*</tool_call>', _cleanup, content, flags=re.DOTALL)
 
 
-def _escape_invalid_backslashes(text):
+def escape_invalid_backslashes(text):
     out = []
     in_string = False
     escape = False
@@ -72,13 +72,13 @@ def _escape_invalid_backslashes(text):
     return "".join(out)
 
 
-def _try_load_json(raw):
+def try_load_json(raw):
     try:
         return json.loads(raw)
     except (json.JSONDecodeError, ValueError):
         pass
 
-    repaired = _escape_invalid_backslashes(raw)
+    repaired = escape_invalid_backslashes(raw)
     if repaired != raw:
         try:
             return json.loads(repaired)
@@ -88,7 +88,7 @@ def _try_load_json(raw):
     return None
 
 
-def _find_first_json_object(raw):
+def find_first_json_object(raw):
     in_string = False
     escape = False
     depth = 0
@@ -123,7 +123,7 @@ def _find_first_json_object(raw):
     return None
 
 
-def _parse_lenient_kv(raw):
+def parse_lenient_kv(raw):
     pairs = re.findall(r'"?([a-zA-Z0-9_\-]+)"?\s*:\s*([^,\n}]+)', raw)
     if not pairs:
         return None
@@ -135,10 +135,10 @@ def _parse_lenient_kv(raw):
     return data
 
 
-def _parse_tool_call_body(raw):
+def parse_tool_call_body(raw):
     raw = raw.strip()
 
-    call = _try_load_json(raw)
+    call = try_load_json(raw)
     if isinstance(call, dict) and "name" in call:
         return call, None
 
@@ -149,27 +149,27 @@ def _parse_tool_call_body(raw):
         arguments = {}
         if args_m:
             args_str = args_m.group(1).strip()
-            parsed_args = _try_load_json(args_str)
+            parsed_args = try_load_json(args_str)
             if isinstance(parsed_args, dict):
                 arguments = parsed_args
             else:
                 arguments = {"raw": args_str}
         return {"name": name, "arguments": arguments}, None
 
-    raw_obj = _find_first_json_object(raw)
+    raw_obj = find_first_json_object(raw)
     if raw_obj:
-        call = _try_load_json(raw_obj)
+        call = try_load_json(raw_obj)
         if isinstance(call, dict) and "name" in call:
             return call, None
 
-    kv = _parse_lenient_kv(raw)
+    kv = parse_lenient_kv(raw)
     if isinstance(kv, dict) and "name" in kv:
         return kv, "lenient"
 
     return None, "parse_failed"
 
 
-def _canonical_tool_name(name, tools):
+def canonical_tool_name(name, tools):
     if not tools:
         return name
     known = {
@@ -182,7 +182,7 @@ def _canonical_tool_name(name, tools):
     return lower_map.get(name.lower(), name)
 
 
-def _parse_typed_value(value, expected_type):
+def parse_typed_value(value, expected_type):
     if expected_type == "integer":
         try:
             return int(value)
@@ -202,13 +202,13 @@ def _parse_typed_value(value, expected_type):
                 return False
         return value
     if expected_type in ("array", "object") and isinstance(value, str):
-        parsed = _try_load_json(value)
+        parsed = try_load_json(value)
         if isinstance(parsed, (list, dict)):
             return parsed
     return value
 
 
-def _coerce_arguments(arguments, tool_name, tools):
+def coerce_arguments(arguments, tool_name, tools):
     if not tools:
         return arguments
     if not isinstance(arguments, dict):
@@ -228,11 +228,11 @@ def _coerce_arguments(arguments, tool_name, tools):
     for key, value in arguments.items():
         expected = properties.get(key, {}).get("type")
         if expected:
-            coerced[key] = _parse_typed_value(value, expected)
+            coerced[key] = parse_typed_value(value, expected)
     return coerced
 
 
-def _validate_arguments(arguments, tool_name, tools):
+def validate_arguments(arguments, tool_name, tools):
     if not tools:
         return []
     if not isinstance(arguments, dict):
@@ -252,7 +252,7 @@ def _validate_arguments(arguments, tool_name, tools):
     return missing
 
 
-def _find_tool_call_blocks(content):
+def find_tool_call_blocks(content):
     blocks = []
     for match in re.finditer(r'<tool_call>\s*(.*?)\s*</tool_call>', content, re.DOTALL):
         blocks.append((match.group(1), match.start(), match.end()))
@@ -265,7 +265,7 @@ def extract_tool_calls(content, tools=None):
     return GenericAdapter().extract_tool_calls(content, tools=tools)
 
 
-def _tag_prefix_len(text, tag):
+def tag_prefix_len(text, tag):
     max_len = min(len(tag) - 1, len(text))
     for length in range(max_len, 0, -1):
         if text[-length:] == tag[:length]:

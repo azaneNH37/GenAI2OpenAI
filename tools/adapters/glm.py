@@ -4,14 +4,14 @@ import uuid
 
 from tools.adapters._inject_shared import inject_with_renderers
 from tools.adapters.base import ToolAdapter
-from tools.prompts import normalize_messages
+from tools.adapters._message_utils import normalize_messages
 from tools.parsing import (
     ToolCallParseResult,
-    _canonical_tool_name,
-    _coerce_arguments,
-    _find_tool_call_blocks,
-    _try_load_json,
-    _validate_arguments,
+    canonical_tool_name,
+    coerce_arguments,
+    find_tool_call_blocks,
+    try_load_json,
+    validate_arguments,
     normalize_whitespace_around_tags,
     strip_think_blocks,
     unwrap_markdown_fences,
@@ -107,7 +107,7 @@ def _parse_glm_tool_call_body(raw):
                 arguments[key.strip()] = value.strip()
             return {"name": name, "arguments": arguments}, "glm"
 
-    call = _try_load_json(raw)
+    call = try_load_json(raw)
     if isinstance(call, dict) and "name" in call:
         return call, "json"
 
@@ -118,7 +118,7 @@ def _parse_glm_tool_call_body(raw):
         arguments = {}
         if args_m:
             args_str = args_m.group(1).strip()
-            parsed_args = _try_load_json(args_str)
+            parsed_args = try_load_json(args_str)
             if isinstance(parsed_args, dict):
                 arguments = parsed_args
             else:
@@ -156,7 +156,7 @@ class GlmAdapter(ToolAdapter):
         cleaned = unwrap_markdown_fences(cleaned)
         cleaned = normalize_whitespace_around_tags(cleaned)
 
-        blocks = _find_tool_call_blocks(cleaned)
+        blocks = find_tool_call_blocks(cleaned)
         missing_close = False
         if not blocks:
             open_tag = "<tool_call>"
@@ -177,11 +177,11 @@ class GlmAdapter(ToolAdapter):
                 parse_errors.append(f"tool_call[{i}] parse_failed")
                 continue
 
-            canonical_name = _canonical_tool_name(call.get("name", ""), tools)
+            canonical_name = canonical_tool_name(call.get("name", ""), tools)
             arguments = call.get("arguments", {})
 
-            coerced_args = _coerce_arguments(arguments, canonical_name, tools)
-            missing = _validate_arguments(coerced_args, canonical_name, tools)
+            coerced_args = coerce_arguments(arguments, canonical_name, tools)
+            missing = validate_arguments(coerced_args, canonical_name, tools)
             if missing:
                 parse_errors.append(
                     f"tool_call[{i}] missing required: {', '.join(missing)}"
