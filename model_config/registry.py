@@ -62,6 +62,13 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         tool_adapter="generic",
         supports_reasoning=True,
     ),
+    "gpt-5.5": ModelSpec(
+        public_id="gpt-5.5",
+        genai_id="GPT-5.5",
+        root_ai_type="azure",
+        tool_adapter="generic",
+        supports_reasoning=True,
+    )
 }
 
 _ALIAS_MAP: dict[str, ModelSpec] = {}
