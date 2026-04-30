@@ -260,65 +260,9 @@ def _find_tool_call_blocks(content):
 
 
 def extract_tool_calls(content, tools=None):
-    cleaned = strip_think_blocks(content or "")
-    cleaned = unwrap_markdown_fences(cleaned)
-    cleaned = normalize_whitespace_around_tags(cleaned)
+    from tools.adapters.generic import GenericAdapter
 
-    blocks = _find_tool_call_blocks(cleaned)
-    if not blocks:
-        logger.debug("No <tool_call> tags found in content (%d chars): %s",
-                      len(content or ""), (content or "")[:500])
-        return ToolCallParseResult(None, content, [], cleaned)
-
-    tool_calls = []
-    parse_errors = []
-
-    for i, (body, start, end) in enumerate(blocks):
-        call, method = _parse_tool_call_body(body)
-        if not call or "name" not in call:
-            parse_errors.append(f"tool_call[{i}] parse_failed")
-            logger.warning("Failed to parse tool_call[%d] — raw: %s", i, body[:300])
-            continue
-
-        canonical_name = _canonical_tool_name(call.get("name", ""), tools)
-        arguments = call.get("arguments", {})
-        if isinstance(arguments, str):
-            parsed_args = _try_load_json(arguments)
-            if isinstance(parsed_args, dict):
-                arguments = parsed_args
-
-        coerced_args = _coerce_arguments(arguments, canonical_name, tools)
-        missing = _validate_arguments(coerced_args, canonical_name, tools)
-        if missing:
-            parse_errors.append(
-                f"tool_call[{i}] missing required: {', '.join(missing)}"
-            )
-        if method == "lenient":
-            parse_errors.append(f"tool_call[{i}] parsed via lenient mode")
-
-        tool_calls.append({
-            "id": f"call_{uuid.uuid4().hex[:24]}",
-            "type": "function",
-            "function": {
-                "name": canonical_name,
-                "arguments": json.dumps(coerced_args, ensure_ascii=False)
-            }
-        })
-
-    if not tool_calls:
-        return ToolCallParseResult(None, content, parse_errors, cleaned)
-
-    remaining_parts = []
-    cursor = 0
-    for _, start, end in blocks:
-        if cursor < start:
-            remaining_parts.append(cleaned[cursor:start])
-        cursor = end
-    if cursor < len(cleaned):
-        remaining_parts.append(cleaned[cursor:])
-
-    remaining_text = "".join(remaining_parts).strip() or None
-    return ToolCallParseResult(tool_calls, remaining_text, parse_errors, cleaned)
+    return GenericAdapter().extract_tool_calls(content, tools=tools)
 
 
 def _tag_prefix_len(text, tag):

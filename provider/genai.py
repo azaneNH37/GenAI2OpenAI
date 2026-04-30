@@ -7,7 +7,13 @@ import requests
 
 from config import GENAI_URL, build_genai_headers, model_registry
 from errors import make_error_chunk
-from tools.parsing import extract_tool_calls, _tag_prefix_len
+from model_config.registry import (
+    get_genai_id,
+    get_root_ai_type,
+    resolve_model,
+    supports_reasoning,
+)
+from tools.parsing import _tag_prefix_len
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +41,11 @@ def extract_content_from_genai(response_data):
 
 def stream_genai_response(chat_info, messages, model, max_tokens, config):
     token = config.token_manager.get_token()
-    root_ai_type = model_registry.get_root_ai_type(model, token)
+    genai_id = get_genai_id(model)
+    record = None
+    if not resolve_model(model):
+        record = model_registry.get_models(token).get(model)
+    root_ai_type = get_root_ai_type(model, genai_record=record)
     headers = build_genai_headers(token)
 
     genai_data = {
@@ -43,7 +53,7 @@ def stream_genai_response(chat_info, messages, model, max_tokens, config):
         "messages": messages,
         "type": "3",
         "stream": True,
-        "aiType": model,
+        "aiType": genai_id,
         "aiSecType": "1",
         "promptTokens": 0,
         "rootAiType": root_ai_type,
@@ -51,7 +61,7 @@ def stream_genai_response(chat_info, messages, model, max_tokens, config):
     }
 
     logger.debug("=== GenAI Request ===")
-    logger.debug("Model: %s, rootAiType: %s", model, root_ai_type)
+    logger.debug("Model: %s (aiType=%s), rootAiType: %s", model, genai_id, root_ai_type)
     logger.debug("Messages count: %d", len(messages))
     for i, msg in enumerate(messages):
         role = msg.get('role', '?')
@@ -184,16 +194,25 @@ def stream_genai_response(chat_info, messages, model, max_tokens, config):
         yield make_error_chunk(str(e), model)
 
 
-def stream_genai_response_with_tools(chat_info, messages, model, max_tokens, config, tools=None):
+def stream_genai_response_with_tools(
+    chat_info,
+    messages,
+    model,
+    max_tokens,
+    config,
+    adapter,
+    tools=None,
+):
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(datetime.now().timestamp())
 
-    OPEN_TAG = "<tool_call>"
+    open_tag = adapter.open_tags[0] if adapter else "<tool_call>"
 
     buffer = ""
     tool_buffer = ""
     sent_role = False
     tool_detected = False
+    think_enabled = supports_reasoning(model)
     think_state = "outside"
     think_buffer = ""
 
@@ -239,30 +258,31 @@ def stream_genai_response_with_tools(chat_info, messages, model, max_tokens, con
         if not content:
             continue
 
-        if think_state == "outside":
-            if "<think>" in content:
-                before, _, after = content.partition("<think>")
-                if before:
-                    content = before
+        if think_enabled:
+            if think_state == "outside":
+                if "<think>" in content:
+                    before, _, after = content.partition("<think>")
+                    if before:
+                        content = before
+                    else:
+                        content = ""
+                    think_state = "inside"
+                    think_buffer = ""
+                    if after:
+                        content = content + after
+
+            if think_state == "inside":
+                if "</think>" in content:
+                    before, _, after = content.partition("</think>")
+                    think_buffer += before
+                    if think_buffer:
+                        yield make_chunk({"reasoning_content": think_buffer})
+                    think_buffer = ""
+                    think_state = "outside"
+                    content = after
                 else:
-                    content = ""
-                think_state = "inside"
-                think_buffer = ""
-                if after:
-                    content = content + after
-            
-        if think_state == "inside":
-            if "</think>" in content:
-                before, _, after = content.partition("</think>")
-                think_buffer += before
-                if think_buffer:
-                    yield make_chunk({"reasoning_content": think_buffer})
-                think_buffer = ""
-                think_state = "outside"
-                content = after
-            else:
-                think_buffer += content
-                continue
+                    think_buffer += content
+                    continue
 
         if not content:
             continue
@@ -274,7 +294,7 @@ def stream_genai_response_with_tools(chat_info, messages, model, max_tokens, con
         buffer += content
 
         while True:
-            tag_pos = buffer.find(OPEN_TAG)
+            tag_pos = buffer.find(open_tag)
             if tag_pos >= 0:
                 pre = buffer[:tag_pos]
                 if pre:
@@ -285,7 +305,7 @@ def stream_genai_response_with_tools(chat_info, messages, model, max_tokens, con
                 buffer = ""
                 break
 
-            plen = _tag_prefix_len(buffer, OPEN_TAG)
+            plen = _tag_prefix_len(buffer, open_tag)
             if plen > 0:
                 safe = buffer[:-plen]
                 if safe:
@@ -299,7 +319,7 @@ def stream_genai_response_with_tools(chat_info, messages, model, max_tokens, con
             break
 
     if tool_detected:
-        result = extract_tool_calls(tool_buffer, tools=tools)
+        result = adapter.extract_tool_calls(tool_buffer, tools=tools)
         tool_calls = result.tool_calls
         remaining = result.remaining_text
 

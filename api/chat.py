@@ -7,8 +7,8 @@ from datetime import datetime
 from flask import Blueprint, current_app, request, jsonify, stream_with_context, Response
 
 from errors import openai_error
-from tools.prompts import inject_tool_prompt
-from tools.parsing import extract_tool_calls
+from model_config.registry import select_tool_adapter
+from tools.adapters import get_adapter
 from provider.genai import (
     convert_messages_to_genai_format,
     stream_genai_response,
@@ -44,8 +44,11 @@ def chat_completions():
         logger.info("[%s] model=%s stream=%s tools=%s messages=%d",
                      request_id, model, stream, bool(has_tools), len(messages))
 
+        adapter = None
         if has_tools:
-            messages = inject_tool_prompt(messages, tools, tool_choice)
+            adapter_name = select_tool_adapter(model, genai_record=None)
+            adapter = get_adapter(adapter_name)
+            messages = adapter.inject(messages, tools, tool_choice)
 
         chat_info = convert_messages_to_genai_format(messages)
 
@@ -55,7 +58,13 @@ def chat_completions():
         if stream:
             if has_tools:
                 gen = stream_genai_response_with_tools(
-                    chat_info, messages, model, max_tokens, config, tools=tools
+                    chat_info,
+                    messages,
+                    model,
+                    max_tokens,
+                    config,
+                    adapter=adapter,
+                    tools=tools,
                 )
             else:
                 gen = stream_genai_response(
@@ -94,8 +103,8 @@ def chat_completions():
 
             completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
 
-            if has_tools:
-                result = extract_tool_calls(complete_content, tools=tools)
+            if has_tools and adapter:
+                result = adapter.extract_tool_calls(complete_content, tools=tools)
                 tool_calls = result.tool_calls
                 remaining_text = result.remaining_text
                 if result.parse_errors:
