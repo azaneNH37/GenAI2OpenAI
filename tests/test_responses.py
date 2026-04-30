@@ -1,6 +1,17 @@
 """
 Responses API test script
 Usage: uv run tests/test_responses.py --base-url http://localhost:5000 --model GPT-4.1
+
+测试场景:
+  1. 基础文本响应
+  2. 通过 ID 获取响应
+  3. 取消响应
+  4. 工具调用 (非流式)
+  5. previous_response_id 状态链接
+  6. 流式文本响应
+  7. 流式工具调用
+  8. instructions 参数
+  9. function_call_output 完整工具循环
 """
 
 import argparse
@@ -239,6 +250,77 @@ def test_stream_tool_call():
     return False
 
 
+def test_instructions():
+    print_separator("Test 8: instructions parameter")
+    resp = _post("/v1/responses", {
+        "model": MODEL,
+        "input": "What is my name?",
+        "instructions": "You are a helpful assistant. The user's name is Alice.",
+        "stream": False,
+        "store": True,
+    })
+    data = resp.json()
+    print(json.dumps(data, indent=2, ensure_ascii=False)[:2000])
+
+    output_text = (data.get("output_text") or "").lower()
+    if "alice" in output_text:
+        print("[PASS] Model followed instructions and referenced 'Alice'")
+        return True
+
+    print("[WARN] Model did not reference 'Alice' from instructions")
+    return False
+
+
+def test_function_call_output():
+    print_separator("Test 9: Full tool loop (function_call_output)")
+    # Step 1: trigger a tool call
+    resp1 = _post("/v1/responses", {
+        "model": MODEL,
+        "input": "What's the weather in Beijing?",
+        "tools": [WEATHER_TOOL_RESPONSES],
+        "stream": False,
+        "store": True,
+    })
+    data1 = resp1.json()
+    output1 = data1.get("output") or []
+    func_call = next((o for o in output1 if o.get("type") == "function_call"), None)
+
+    if not func_call:
+        print("[FAIL] Step 1 did not produce a function_call")
+        print(json.dumps(data1, indent=2, ensure_ascii=False)[:2000])
+        return False
+
+    call_id = func_call.get("call_id", "")
+    func_name = func_call.get("name", "")
+    func_args = func_call.get("arguments", "")
+    resp1_id = data1.get("id", "")
+    print(f"  Step 1: function_call id={call_id}, name={func_name}, args={func_args}")
+
+    # Step 2: send function_call_output back
+    resp2 = _post("/v1/responses", {
+        "model": MODEL,
+        "input": [
+            {"type": "function_call", "call_id": call_id, "name": func_name, "arguments": func_args},
+            {"type": "function_call_output", "call_id": call_id, "output": "Beijing: Sunny, 25°C, humidity 45%"},
+        ],
+        "previous_response_id": resp1_id,
+        "tools": [WEATHER_TOOL_RESPONSES],
+        "stream": False,
+        "store": True,
+    })
+    data2 = resp2.json()
+    print(f"  Step 2 response:")
+    print(json.dumps(data2, indent=2, ensure_ascii=False)[:2000])
+
+    output_text = (data2.get("output_text") or "").lower()
+    if data2.get("status") == "completed" and output_text:
+        print(f"[PASS] Full tool loop completed. Answer: {data2.get('output_text', '')[:200]}")
+        return True
+
+    print("[FAIL] Full tool loop did not produce a completed text response")
+    return False
+
+
 if __name__ == "__main__":
     print(f"Testing against: {BASE_URL}")
     print(f"Model: {MODEL}")
@@ -252,6 +334,8 @@ if __name__ == "__main__":
     results["previous_response_id"] = test_previous_response_id()
     results["stream_text"] = test_stream_text()
     results["stream_tool_call"] = test_stream_tool_call()
+    results["instructions"] = test_instructions()
+    results["function_call_output"] = test_function_call_output()
 
     print_separator("Summary")
     for name, passed in results.items():

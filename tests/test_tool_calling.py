@@ -1,13 +1,21 @@
 """
 Tool Calling 测试脚本
-用法: uv run test_tool_calling.py [--base-url http://localhost:5000] [--model GPT-4.1]
+用法: uv run tests/test_tool_calling.py [--base-url http://localhost:5000] [--model GPT-4.1]
 
 测试场景:
+  0. 模型列表
   1. 单次 tool call (天气查询)
   2. 多次 tool call (并行查天气)
   3. 多轮对话 (tool call -> tool result -> 最终回答)
   4. 无 tool 调用 (普通问题不应触发 tool)
   5. 流式 tool call
+  6. 流式 + tools 但无需调用 (验证真流式)
+  7. Tag 前缀检测 (离线单元测试)
+  8. 本地文件读取 tool call
+  9. tool_choice=none
+  10. tool_choice=required
+  11. tool_choice=specific (指定函数名)
+  12. 复杂参数类型 (integer/boolean/array)
 """
 
 import argparse
@@ -100,6 +108,37 @@ READ_FILE_TOOL = {
                 }
             },
             "required": ["path"]
+        }
+    }
+}
+
+SEARCH_PAPERS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_papers",
+        "description": "Search academic papers on a given topic",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results"
+                },
+                "include_abstracts": {
+                    "type": "boolean",
+                    "description": "Whether to include paper abstracts"
+                },
+                "fields": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Fields to return"
+                }
+            },
+            "required": ["query"]
         }
     }
 }
@@ -467,6 +506,161 @@ def test_local_file_tool_call():
     return True
 
 
+def test_tool_choice_none():
+    """测试 9: tool_choice=none — 即使提供了工具也不应调用"""
+    print_separator("Test 9: tool_choice=none")
+
+    resp = requests.post(f"{BASE_URL}/v1/chat/completions", json={
+        "model": MODEL,
+        "messages": [
+            {"role": "user", "content": "What is the capital of France?"}
+        ],
+        "tools": [WEATHER_TOOL, CALCULATOR_TOOL],
+        "tool_choice": "none",
+        "stream": False
+    })
+
+    data = resp.json()
+    print(json.dumps(data, indent=2, ensure_ascii=False))
+
+    choice = data.get("choices", [{}])[0]
+    msg = choice.get("message", {})
+
+    if not msg.get("tool_calls") and msg.get("content"):
+        print(f"[PASS] No tool called with tool_choice=none. Answer: {msg.get('content', '')[:200]}")
+        return True
+    elif msg.get("tool_calls"):
+        names = [tc['function']['name'] for tc in msg["tool_calls"]]
+        print(f"[FAIL] tool_choice=none but tools were called: {names}")
+        return False
+    else:
+        print("[FAIL] No tool calls but also no content")
+        return False
+
+
+def test_tool_choice_required():
+    """测试 10: tool_choice=required — 必须调用至少一个工具"""
+    print_separator("Test 10: tool_choice=required")
+
+    resp = requests.post(f"{BASE_URL}/v1/chat/completions", json={
+        "model": MODEL,
+        "messages": [
+            {"role": "user", "content": "What is the weather in Shanghai?"}
+        ],
+        "tools": [WEATHER_TOOL, CALCULATOR_TOOL],
+        "tool_choice": "required",
+        "stream": False
+    })
+
+    data = resp.json()
+    print(json.dumps(data, indent=2, ensure_ascii=False))
+
+    choice = data.get("choices", [{}])[0]
+    msg = choice.get("message", {})
+
+    if msg.get("tool_calls") and len(msg["tool_calls"]) >= 1:
+        names = [tc['function']['name'] for tc in msg["tool_calls"]]
+        print(f"[PASS] tool_choice=required triggered tool call(s): {names}")
+        return True
+    else:
+        print("[WARN] tool_choice=required but no tool calls (model may not follow prompt injection)")
+        return False
+
+
+def test_tool_choice_specific():
+    """测试 11: tool_choice=specific — 指定调用某个函数"""
+    print_separator("Test 11: tool_choice=specific (web_search)")
+
+    resp = requests.post(f"{BASE_URL}/v1/chat/completions", json={
+        "model": MODEL,
+        "messages": [
+            {"role": "user", "content": "Find information about the Olympic Games"}
+        ],
+        "tools": [WEATHER_TOOL, CALCULATOR_TOOL, SEARCH_TOOL],
+        "tool_choice": {"type": "function", "function": {"name": "web_search"}},
+        "stream": False
+    })
+
+    data = resp.json()
+    print(json.dumps(data, indent=2, ensure_ascii=False))
+
+    choice = data.get("choices", [{}])[0]
+    msg = choice.get("message", {})
+    tool_calls = msg.get("tool_calls") or []
+
+    if tool_calls:
+        names = [tc['function']['name'] for tc in tool_calls]
+        if "web_search" in names:
+            print(f"[PASS] tool_choice=specific correctly called web_search: {names}")
+            return True
+        else:
+            print(f"[WARN] tool_choice=specific for web_search but called: {names} (prompt injection not strongly enforced)")
+            return False
+    else:
+        print("[WARN] tool_choice=specific but no tool calls (prompt injection not strongly enforced)")
+        return False
+
+
+def test_complex_parameter_types():
+    """测试 12: 复杂参数类型 (integer/boolean/array)"""
+    print_separator("Test 12: Complex Parameter Types (int/bool/array)")
+
+    resp = requests.post(f"{BASE_URL}/v1/chat/completions", json={
+        "model": MODEL,
+        "messages": [
+            {"role": "user", "content": "Search for recent AI papers, limit 5 results, include abstracts"}
+        ],
+        "tools": [SEARCH_PAPERS_TOOL],
+        "stream": False
+    })
+
+    data = resp.json()
+    print(json.dumps(data, indent=2, ensure_ascii=False))
+
+    choice = data.get("choices", [{}])[0]
+    msg = choice.get("message", {})
+    tool_calls = msg.get("tool_calls") or []
+
+    if not tool_calls:
+        print("[FAIL] No tool calls in response")
+        return False
+
+    tc = tool_calls[0]
+    args_raw = tc.get("function", {}).get("arguments", "{}")
+    try:
+        args = json.loads(args_raw)
+    except json.JSONDecodeError:
+        print(f"[FAIL] Arguments JSON parse error: {args_raw[:200]}")
+        return False
+
+    print(f"  tool_call: {tc['function']['name']}({args_raw})")
+    print(f"  parsed args: {args}")
+
+    has_query = "query" in args
+    if not has_query:
+        print("[FAIL] Missing required 'query' argument")
+        return False
+
+    # Check integer type coercion for 'limit'
+    limit_val = args.get("limit")
+    if limit_val is not None:
+        if isinstance(limit_val, int) and not isinstance(limit_val, bool):
+            print(f"  [OK] limit is integer: {limit_val}")
+        else:
+            print(f"  [WARN] limit is not integer: {type(limit_val).__name__} = {limit_val}")
+
+    # Check boolean type for 'include_abstracts'
+    abs_val = args.get("include_abstracts")
+    if abs_val is not None:
+        if isinstance(abs_val, bool):
+            print(f"  [OK] include_abstracts is boolean: {abs_val}")
+        else:
+            print(f"  [WARN] include_abstracts is not boolean: {type(abs_val).__name__} = {abs_val}")
+
+    print(f"[PASS] Complex parameter types tool call parsed successfully")
+    return True
+
+
 def test_tag_prefix_detection():
     """测试 7: _tag_prefix_len 单元测试（离线，不需要服务器）"""
     print_separator("Test 7: Tag Prefix Detection (Unit Test)")
@@ -531,6 +725,10 @@ if __name__ == '__main__':
         ("stream_tool_call", test_stream_tool_call),
         ("stream_no_tool_needed", test_stream_no_tool_needed),
         ("local_file_tool_call", test_local_file_tool_call),
+        ("tool_choice_none", test_tool_choice_none),
+        ("tool_choice_required", test_tool_choice_required),
+        ("tool_choice_specific", test_tool_choice_specific),
+        ("complex_parameter_types", test_complex_parameter_types),
     ]
 
     for name, fn in tests:
