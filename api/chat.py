@@ -55,7 +55,7 @@ def chat_completions():
         if stream:
             if has_tools:
                 gen = stream_genai_response_with_tools(
-                    chat_info, messages, model, max_tokens, config
+                    chat_info, messages, model, max_tokens, config, tools=tools
                 )
             else:
                 gen = stream_genai_response(
@@ -95,7 +95,11 @@ def chat_completions():
             completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
 
             if has_tools:
-                tool_calls, remaining_text = extract_tool_calls(complete_content)
+                result = extract_tool_calls(complete_content, tools=tools)
+                tool_calls = result.tool_calls
+                remaining_text = result.remaining_text
+                if result.parse_errors:
+                    logger.warning("[%s] tool call parse errors: %s", request_id, result.parse_errors)
             else:
                 tool_calls, remaining_text = None, complete_content
 

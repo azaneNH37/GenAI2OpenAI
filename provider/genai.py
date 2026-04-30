@@ -184,7 +184,7 @@ def stream_genai_response(chat_info, messages, model, max_tokens, config):
         yield make_error_chunk(str(e), model)
 
 
-def stream_genai_response_with_tools(chat_info, messages, model, max_tokens, config):
+def stream_genai_response_with_tools(chat_info, messages, model, max_tokens, config, tools=None):
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(datetime.now().timestamp())
 
@@ -194,6 +194,8 @@ def stream_genai_response_with_tools(chat_info, messages, model, max_tokens, con
     tool_buffer = ""
     sent_role = False
     tool_detected = False
+    think_state = "outside"
+    think_buffer = ""
 
     def make_chunk(delta, finish_reason=None):
         chunk = {
@@ -237,6 +239,34 @@ def stream_genai_response_with_tools(chat_info, messages, model, max_tokens, con
         if not content:
             continue
 
+        if think_state == "outside":
+            if "<think>" in content:
+                before, _, after = content.partition("<think>")
+                if before:
+                    content = before
+                else:
+                    content = ""
+                think_state = "inside"
+                think_buffer = ""
+                if after:
+                    content = content + after
+            
+        if think_state == "inside":
+            if "</think>" in content:
+                before, _, after = content.partition("</think>")
+                think_buffer += before
+                if think_buffer:
+                    yield make_chunk({"reasoning_content": think_buffer})
+                think_buffer = ""
+                think_state = "outside"
+                content = after
+            else:
+                think_buffer += content
+                continue
+
+        if not content:
+            continue
+
         if tool_detected:
             tool_buffer += content
             continue
@@ -269,10 +299,15 @@ def stream_genai_response_with_tools(chat_info, messages, model, max_tokens, con
             break
 
     if tool_detected:
-        tool_calls, remaining = extract_tool_calls(tool_buffer)
+        result = extract_tool_calls(tool_buffer, tools=tools)
+        tool_calls = result.tool_calls
+        remaining = result.remaining_text
 
         if tool_calls:
             logger.debug("Streaming tool calling: detected %d tool_call(s)", len(tool_calls))
+
+            if result.parse_errors:
+                logger.warning("Tool call parse errors: %s", result.parse_errors)
 
             if remaining and remaining.strip():
                 yield emit_text(remaining.strip())
