@@ -1,12 +1,16 @@
 # GenAI2OpenAI
 
-OpenAI 兼容的代理服务，将上海科技大学 GenAI 平台的 API 转换为标准 OpenAI Chat Completion 接口。
+OpenAI 兼容的代理服务，将上海科技大学 GenAI 平台的 API 转换为标准 OpenAI 接口。
 
 ## 特性
 
-- **OpenAI 兼容接口** — 直接对接任何支持 OpenAI API 的客户端（ChatGPT UI、Cursor、Continue 等）
+- **OpenAI 兼容接口** — 直接对接任何支持 OpenAI API 的客户端（ChatGPT UI、Cursor、Continue 等），同时支持 Chat Completions (`/v1/chat/completions`) 和 Responses (`/v1/responses`) 两套 API
 - **Tool Calling** — 通过 prompt 注入实现 OpenAI 格式的 function calling，兼容不原生支持的模型
+- **模型特化适配器架构** — `GenericAdapter`（JSON 格式）和 `GlmAdapter`（GLM 格式）自动按模型选择
+- **tool_choice 支持** — `auto` / `required` / `none` / 指定函数名，通过 prompt 注入实现
 - **流式 / 非流式** — 同时支持 SSE 流式和一次性返回两种模式
+- **推理链 (Reasoning)** — 支持 DeepSeek、o3 等模型的 `reasoning_content` 输出
+- **Responses API** — 完整实现 OpenAI 新版 Responses API，含 `previous_response_id` 状态链接、`function_call_output` 回传、`store` / `retrieve` / `cancel` 操作
 - **Token 智能识别** — `--token` 同时支持 JWT 字符串和 `学号@密码` 格式
 - **自动登录与刷新** — 使用学号密码模式时，启动时自动通过 CAS 登录获取 JWT，过期时静默刷新，对客户端完全透明
 - **动态模型列表** — 自动从 GenAI 平台拉取可用模型，无需硬编码
@@ -56,11 +60,11 @@ docker run -d -p 5000:5000 ghcr.io/hebezang/genai2openai:main --token "202400000
 
 ### 环境变量说明
 
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `TOKEN` | JWT 令牌或 `学号@密码`（docker-compose 必需） | — |
-| `API_KEY` | 客户端认证密钥 | 无（不校验） |
-| `PORT` | 宿主机映射端口（仅 docker-compose） | `5000` |
+| 变量      | 说明                                          | 默认值       |
+| --------- | --------------------------------------------- | ------------ |
+| `TOKEN`   | JWT 令牌或 `学号@密码`（docker-compose 必需） | —            |
+| `API_KEY` | 客户端认证密钥                                | 无（不校验） |
+| `PORT`    | 宿主机映射端口（仅 docker-compose）           | `5000`       |
 
 ## 安装与运行 (非 Docker)
 
@@ -88,12 +92,12 @@ uv run main.py --token "eyJ..."
 uv run main.py --token <token> [--port 5000] [--api-key <key>] [--debug]
 ```
 
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `--token` | JWT 令牌或 `学号@密码`（必需） | — |
-| `--port` | 服务监听端口 | `5000` |
+| 参数        | 说明                                              | 默认值       |
+| ----------- | ------------------------------------------------- | ------------ |
+| `--token`   | JWT 令牌或 `学号@密码`（必需）                    | —            |
+| `--port`    | 服务监听端口                                      | `5000`       |
 | `--api-key` | 客户端认证密钥（也可通过 `API_KEY` 环境变量设置） | 无（不校验） |
-| `--debug` | 启用详细日志输出 | 关闭 |
+| `--debug`   | 启用详细日志输出                                  | 关闭         |
 
 ## Token 模式
 
@@ -133,7 +137,24 @@ uv run main.py --token "eyJ..."
 POST /v1/chat/completions
 ```
 
-支持流式和非流式模式，兼容 OpenAI Chat Completion API 格式。
+支持流式和非流式模式，兼容 OpenAI Chat Completion API 格式。支持 `tools`、`tool_choice`、`max_tokens` 等参数。
+
+### Responses
+
+```
+POST /v1/responses
+GET  /v1/responses/<response_id>
+POST /v1/responses/<response_id>/cancel
+```
+
+实现 OpenAI 新版 Responses API，支持：
+
+- `input` / `instructions` 输入
+- `tools` 工具调用，返回 `function_call` 类型输出
+- `previous_response_id` 链接历史对话上下文
+- `function_call_output` 回传工具执行结果
+- `stream` 流式输出（`response.created` → `output_item.added` → `output_text.delta` → `response.completed`）
+- `store` 持久化，支持 `retrieve` / `cancel` 操作
 
 ### 模型列表
 
@@ -194,7 +215,48 @@ response = client.chat.completions.create(
 )
 ```
 
-支持 `tool_choice` 参数：`"auto"`（默认）、`"required"`、指定函数名。
+支持 `tool_choice` 参数：`"auto"`（默认）、`"required"`、`"none"`、`{"type": "function", "function": {"name": "..."}}`。
+
+### Responses API
+
+```python
+import requests
+
+# 基本请求
+resp = requests.post("http://localhost:5000/v1/responses", json={
+    "model": "GPT-4.1",
+    "input": "你好",
+    "instructions": "你是一个友好的助手",
+})
+print(resp.json()["output_text"])
+
+# 带工具的完整循环
+resp1 = requests.post("http://localhost:5000/v1/responses", json={
+    "model": "GPT-4.1",
+    "input": "北京天气如何？",
+    "tools": [{"type": "function", "function": {
+        "name": "get_weather", "description": "获取天气",
+        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
+    }}],
+    "store": True,
+})
+call = next(o for o in resp1.json()["output"] if o["type"] == "function_call")
+
+# 回传工具结果
+resp2 = requests.post("http://localhost:5000/v1/responses", json={
+    "model": "GPT-4.1",
+    "input": [
+        {"type": "function_call", "call_id": call["call_id"], "name": call["name"], "arguments": call["arguments"]},
+        {"type": "function_call_output", "call_id": call["call_id"], "output": "北京：晴，25°C"},
+    ],
+    "previous_response_id": resp1.json()["id"],
+    "tools": [{"type": "function", "function": {
+        "name": "get_weather", "description": "获取天气",
+        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
+    }}],
+})
+print(resp2.json()["output_text"])
+```
 
 ## API Key 认证
 
@@ -214,12 +276,56 @@ GenAI2OpenAI/
 │   └── token_manager.py     # Token 智能管理（识别、校验、刷新）
 ├── api/
 │   ├── chat.py              # /v1/chat/completions
-│   └── models.py            # /v1/models
+│   ├── models.py            # /v1/models
+│   ├── health.py            # /health
+│   └── responses.py         # /v1/responses (CRUD)
 ├── provider/
-│   └── genai.py             # GenAI 上游请求与流式转换
+│   └── genai.py             # GenAI 上游请求、流式转换、工具调用解析
+├── model_config/
+│   ├── registry.py          # 模型规格注册表、别名、适配器选择
+│   └── spec.py              # ModelSpec 数据类
 └── tools/
-    ├── parsing.py           # Tool call XML 解析
-    └── prompts.py           # Tool prompt 注入
+    ├── parsing.py           # Tool call 解析、类型强制转换、参数校验
+    ├── adapters/
+    │   ├── base.py          # ToolAdapter 基类
+    │   ├── generic.py       # GenericAdapter (JSON :invoke 格式)
+    │   └── glm.py           # GlmAdapter (GLM :invoke:name:key=val 格式)
+    └── responses/
+        ├── types.py         # Responses API 数据类型
+        ├── input.py         # 请求解析、输入规范化
+        └── state.py         # 响应存储与历史管理
+```
+
+## 支持模型
+
+以下模型已注册静态规格，支持别名查找和适配器自动选择。未注册的模型会自动透传至 GenAI 平台。
+
+| 模型 ID             | GenAI 平台 ID | 工具适配器 | 别名             |
+| ------------------- | ------------- | ---------- | ---------------- |
+| `glm-5.1`           | chatglm       | glm        | `glm`, `chatglm` |
+| `gpt-4.1`           | GPT-4.1       | generic    | `gpt4.1`         |
+| `gpt-4.1-mini`      | GPT-4.1-mini  | generic    |                  |
+| `gpt-o4-mini`       | o4-mini       | generic    |                  |
+| `gpt-o3`            | o3            | generic    |                  |
+| `deepseek-v4-flash` | deepseek-chat | generic    | `deepseek`       |
+| `deepseek-v4-pro`   | deepseek-pro  | generic    |                  |
+| `qwen-instruct`     | qwen-instruct | generic    | `qwen`           |
+| `minimax-m1`        | MiniMax-M1    | generic    |                  |
+| `gpt-5.5`           | GPT-5.5       | generic    |                  |
+
+> 模型列表也会通过 `GET /v1/models` 从 GenAI 平台动态拉取，上表为静态注册的已知模型。
+
+## 测试
+
+```bash
+# Chat Completions 工具调用测试（含 tool_choice、复杂参数类型）
+uv run tests/test_tool_calling.py --model GPT-4.1
+
+# Responses API 测试（含 instructions、function_call_output）
+uv run tests/test_responses.py --model GPT-4.1
+
+# 错误处理与健康检查测试
+uv run tests/test_errors.py
 ```
 
 ## 许可

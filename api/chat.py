@@ -7,8 +7,8 @@ from datetime import datetime
 from flask import Blueprint, current_app, request, jsonify, stream_with_context, Response
 
 from errors import openai_error
-from tools.prompts import inject_tool_prompt
-from tools.parsing import extract_tool_calls
+from model_config.registry import select_tool_adapter
+from tools.adapters import get_adapter
 from provider.genai import (
     convert_messages_to_genai_format,
     stream_genai_response,
@@ -44,8 +44,11 @@ def chat_completions():
         logger.info("[%s] model=%s stream=%s tools=%s messages=%d",
                      request_id, model, stream, bool(has_tools), len(messages))
 
+        adapter = None
         if has_tools:
-            messages = inject_tool_prompt(messages, tools, tool_choice)
+            adapter_name = select_tool_adapter(model, genai_record=None)
+            adapter = get_adapter(adapter_name)
+            messages = adapter.inject(messages, tools, tool_choice)
 
         chat_info = convert_messages_to_genai_format(messages)
 
@@ -55,7 +58,13 @@ def chat_completions():
         if stream:
             if has_tools:
                 gen = stream_genai_response_with_tools(
-                    chat_info, messages, model, max_tokens, config
+                    chat_info,
+                    messages,
+                    model,
+                    max_tokens,
+                    config,
+                    adapter=adapter,
+                    tools=tools,
                 )
             else:
                 gen = stream_genai_response(
@@ -73,6 +82,7 @@ def chat_completions():
 
         else:
             complete_content = ""
+            complete_reasoning = ""
             for line in stream_genai_response(chat_info, messages, model, max_tokens, config):
                 if line.startswith('data: '):
                     data_str = line[6:].strip()
@@ -83,15 +93,22 @@ def chat_completions():
                         if 'choices' in data and data['choices']:
                             delta = data['choices'][0].get('delta', {})
                             content = delta.get('content', '')
+                            reasoning = data.get('reasoning') or delta.get('reasoning_content', '')
                             if content:
                                 complete_content += content
+                            if reasoning:
+                                complete_reasoning += reasoning
                     except json.JSONDecodeError:
                         pass
 
             completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
 
-            if has_tools:
-                tool_calls, remaining_text = extract_tool_calls(complete_content)
+            if has_tools and adapter:
+                result = adapter.extract_tool_calls(complete_content, tools=tools)
+                tool_calls = result.tool_calls
+                remaining_text = result.remaining_text
+                if result.parse_errors:
+                    logger.warning("[%s] tool call parse errors: %s", request_id, result.parse_errors)
             else:
                 tool_calls, remaining_text = None, complete_content
 
@@ -101,12 +118,16 @@ def chat_completions():
                     "content": remaining_text,
                     "tool_calls": tool_calls
                 }
+                if complete_reasoning:
+                    message_obj["reasoning_content"] = complete_reasoning
                 finish_reason = "tool_calls"
             else:
                 message_obj = {
                     "role": "assistant",
                     "content": complete_content
                 }
+                if complete_reasoning:
+                    message_obj["reasoning_content"] = complete_reasoning
                 finish_reason = "stop"
 
             response = {
