@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 import uuid
 from datetime import datetime
 
@@ -70,13 +71,29 @@ def stream_genai_response(chat_info, messages, model, max_tokens, config):
         logger.debug("  [%d] role=%s, content=%s", i, role, preview)
 
     try:
-        response = requests.post(
-            GENAI_URL,
-            headers=headers,
-            json=genai_data,
-            stream=True,
-            timeout=60
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                response = requests.post(
+                    GENAI_URL,
+                    headers=headers,
+                    json=genai_data,
+                    stream=True,
+                    timeout=60
+                )
+                last_exc = None
+                break
+            except requests.exceptions.ConnectionError as e:
+                last_exc = e
+                if attempt < 2:
+                    wait = 2 ** attempt
+                    logger.warning(
+                        "Connection error (attempt %d/3), retrying in %ds: %s",
+                        attempt + 1, wait, str(e)[:120]
+                    )
+                    time.sleep(wait)
+        if last_exc is not None:
+            raise last_exc
 
         logger.debug("GenAI Response Status: %d", response.status_code)
 
