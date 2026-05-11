@@ -1,17 +1,51 @@
-from flask import Blueprint, jsonify, g
+import logging
 
+from flask import Blueprint, current_app, jsonify, g
+
+from auth.cas_login import LoginError
+from auth.token_manager import TokenExpiredError
 from config import model_registry
 
+logger = logging.getLogger(__name__)
+
 models_bp = Blueprint('models', __name__)
+
+
+def _fetch_models_with_renew(token: str):
+    try:
+        return model_registry.get_models(token), None
+    except TokenExpiredError as e:
+        first_error = e
+
+    config = current_app.config["APP_CONFIG"]
+    if not getattr(config, "fallback_renew", True):
+        return None, first_error
+
+    try:
+        new_token = config.token_manager.force_refresh()
+    except (LoginError, TokenExpiredError) as e:
+        logger.warning("Force refresh failed during /v1/models fallback renew: %s", e)
+        return None, e
+
+    if not new_token:
+        return None, first_error
+
+    logger.info("Retrying model list after token renew")
+    try:
+        return model_registry.get_models(new_token), None
+    except TokenExpiredError as e:
+        return None, e
 
 
 @models_bp.route('/v1/models', methods=['GET'])
 def list_models():
     token = g.get("token", "")
-    models_map = model_registry.get_models(token)
+    models_map, err = _fetch_models_with_renew(token)
+    if err is not None:
+        raise err
 
     models = []
-    for model_id, info in models_map.items():
+    for model_id, info in (models_map or {}).items():
         models.append({
             "id": model_id,
             "object": "model",
