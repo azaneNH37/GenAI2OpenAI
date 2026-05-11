@@ -410,15 +410,43 @@ GenAI2OpenAI/
 
 ## 测试
 
+所有测试均以脚本形式运行：`uv run tests/test_*.py`。测试分为两类：
+
+### 离线单元测试（无需启动服务）
+
+直接对内部模块做 mock，可在任何环境下运行。
+
 ```bash
-# Chat Completions 工具调用测试（含 tool_choice、复杂参数类型）
-uv run tests/test_tool_calling.py --model GPT-4.1
+# 一键运行所有离线测试
+uv run tests/run_offline.py
 
-# Responses API 测试（含 instructions、function_call_output）
-uv run tests/test_responses.py --model GPT-4.1
+# 或单独运行某一个：
+uv run tests/test_genai_retry.py        # DNS / 连接错误重试逻辑
+uv run tests/test_genai_timeout.py      # 上游读超时错误处理
+uv run tests/test_image_content.py      # 图像 / 文本内容提取与展平
+uv run tests/test_usage_accounting.py   # token usage 字段归一化与透传
+```
 
-# 错误处理与健康检查测试
-uv run tests/test_errors.py
+### 集成测试（需要服务在跑）
+
+先按上方"启动服务"小节启动后端，再用 `--base-url` 与 `--model` 指定目标。
+
+```bash
+# 错误处理与健康检查
+uv run tests/test_errors.py --base-url http://localhost:5000
+
+# Chat Completions 工具调用（含 tool_choice、复杂参数类型、流式）
+uv run tests/test_tool_calling.py --base-url http://localhost:5000 --model GPT-4.1
+
+# Responses API（含 instructions、function_call_output 完整工具循环）
+uv run tests/test_responses.py --base-url http://localhost:5000 --model GPT-4.1
+
+# reasoning_content 捕获（流 / 非流）
+uv run tests/test_reasoning_capture.py --base-url http://localhost:5000 --model GPT-4.1
+
+# 视觉输入（非流 / 流）
+uv run tests/test_vision_integration.py --base-url http://localhost:5000 --model gpt-5.5
+uv run tests/test_vision_stream.py --base-url http://localhost:5000 --model gpt-5.5
 ```
 
 ## 许可

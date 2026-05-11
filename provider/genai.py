@@ -8,7 +8,13 @@ from datetime import datetime
 
 import requests
 
-from config import GENAI_URL, build_genai_headers, model_registry
+from config import (
+    GENAI_READ_TIMEOUT,
+    GENAI_REQUEST_TIMEOUT,
+    GENAI_URL,
+    build_genai_headers,
+    model_registry,
+)
 from errors import make_error_chunk
 from model_config.registry import (
     get_genai_id,
@@ -565,6 +571,19 @@ def stream_genai_response(chat_info, messages, model, max_tokens, config):
         yield terminal_chunk(finish_reason_seen)
         yield "data: [DONE]\n\n"
 
+    except requests.exceptions.ReadTimeout:
+        logger.warning("GenAI stream read timeout after %.1fs", GENAI_READ_TIMEOUT)
+        yield make_error_chunk(
+            f"Upstream GenAI read timed out after {GENAI_READ_TIMEOUT:g}s. "
+            "The request may be too large or the upstream model may be busy.",
+            model,
+        )
+    except requests.exceptions.ConnectTimeout:
+        logger.warning("GenAI stream connect timeout")
+        yield make_error_chunk("Upstream GenAI connection timed out", model)
+    except requests.exceptions.RequestException as e:
+        logger.exception("GenAI stream request failed")
+        yield make_error_chunk(f"Upstream GenAI request failed: {e}", model)
     except Exception as e:
         logger.exception("Error in stream_genai_response")
         yield make_error_chunk(str(e), model)

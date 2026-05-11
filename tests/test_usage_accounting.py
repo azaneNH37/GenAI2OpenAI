@@ -1,8 +1,12 @@
 import json
+import sys
 import threading
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import create_app
 from config import Config
