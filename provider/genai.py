@@ -408,7 +408,7 @@ def stream_genai_response(chat_info, messages, model, max_tokens, config):
                     headers=headers,
                     json=genai_data,
                     stream=True,
-                    timeout=60
+                    timeout=GENAI_REQUEST_TIMEOUT
                 )
                 last_exc = None
                 break
@@ -433,7 +433,7 @@ def stream_genai_response(chat_info, messages, model, max_tokens, config):
                 headers = build_genai_headers(new_token)
                 response = requests.post(
                     GENAI_URL, headers=headers, json=genai_data,
-                    stream=True, timeout=60
+                    stream=True, timeout=GENAI_REQUEST_TIMEOUT
                 )
 
         if response.status_code != 200:

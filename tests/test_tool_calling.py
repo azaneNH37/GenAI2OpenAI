@@ -29,7 +29,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 parser = argparse.ArgumentParser()
 parser.add_argument('--base-url', default='http://localhost:5000')
 parser.add_argument('--model', default='GPT-4.1')
-args = parser.parse_args()
+args, _unknown_args = parser.parse_known_args()
 
 BASE_URL = args.base_url
 MODEL = args.model
