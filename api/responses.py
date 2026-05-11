@@ -28,6 +28,9 @@ from tools.responses.types import (
 )
 from provider.genai import (
     _extract_text_from_content,
+    complete_usage,
+    estimate_messages_token_count,
+    estimate_token_count,
     stream_genai_response,
     stream_genai_response_with_tools,
 )
@@ -80,13 +83,17 @@ def create_response():
 
     complete_content = ""
     complete_reasoning = ""
-    for line in stream_genai_response(chat_info, messages, req.model, req.max_output_tokens or req.max_tokens, config):
+    response_usage = None
+    max_tokens = req.max_output_tokens or req.max_tokens
+    for line in stream_genai_response(chat_info, messages, req.model, max_tokens, config):
         if line.startswith("data: "):
             data_str = line[6:].strip()
             if data_str == "[DONE]":
                 continue
             try:
                 data = json.loads(data_str)
+                if isinstance(data.get("usage"), dict):
+                    response_usage = data["usage"]
                 if "choices" in data and data["choices"]:
                     delta = data["choices"][0].get("delta", {})
                     content = delta.get("content", "")
@@ -133,11 +140,12 @@ def create_response():
         model=req.model,
         output=output_items,
         output_text=output_text,
-        usage={
-            "prompt_tokens": 0,
-            "completion_tokens": len(complete_content),
-            "total_tokens": len(complete_content),
-        },
+        usage=complete_usage(
+            response_usage,
+            prompt_tokens=estimate_messages_token_count(messages),
+            completion_tokens=estimate_token_count(complete_content),
+            reasoning_tokens=estimate_token_count(complete_reasoning) or None,
+        ),
     )
 
     if req.store:
@@ -198,6 +206,7 @@ def _stream_response(req, messages, tools, adapter, chat_info, config):
 
         complete_content = ""
         complete_reasoning = ""
+        response_usage = None
         tool_calls = None
         remaining_text = ""
 
@@ -220,6 +229,8 @@ def _stream_response(req, messages, tools, adapter, chat_info, config):
                         data = json.loads(data_str)
                     except json.JSONDecodeError:
                         continue
+                    if isinstance(data.get("usage"), dict):
+                        response_usage = data["usage"]
 
                     if "choices" not in data or not data["choices"]:
                         continue
@@ -249,7 +260,8 @@ def _stream_response(req, messages, tools, adapter, chat_info, config):
 
             remaining_text = complete_content
         else:
-            for line in stream_genai_response(chat_info, messages, req.model, req.max_output_tokens or req.max_tokens, config):
+            max_tokens = req.max_output_tokens or req.max_tokens
+            for line in stream_genai_response(chat_info, messages, req.model, max_tokens, config):
                 if line.startswith("data: "):
                     data_str = line[6:].strip()
                     if data_str == "[DONE]":
@@ -258,6 +270,8 @@ def _stream_response(req, messages, tools, adapter, chat_info, config):
                         data = json.loads(data_str)
                     except json.JSONDecodeError:
                         continue
+                    if isinstance(data.get("usage"), dict):
+                        response_usage = data["usage"]
 
                     if "choices" not in data or not data["choices"]:
                         continue
@@ -298,11 +312,12 @@ def _stream_response(req, messages, tools, adapter, chat_info, config):
             model=req.model,
             output=output_items,
             output_text=output_text,
-            usage={
-                "prompt_tokens": 0,
-                "completion_tokens": len(complete_content),
-                "total_tokens": len(complete_content),
-            },
+            usage=complete_usage(
+                response_usage,
+                prompt_tokens=estimate_messages_token_count(messages),
+                completion_tokens=estimate_token_count(complete_content),
+                reasoning_tokens=estimate_token_count(complete_reasoning) or None,
+            ),
         )
 
         if req.store:
