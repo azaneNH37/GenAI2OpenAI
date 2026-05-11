@@ -1,3 +1,4 @@
+import itertools
 import json
 import logging
 import queue
@@ -8,6 +9,8 @@ from datetime import datetime
 
 import requests
 
+from auth.cas_login import LoginError
+from auth.token_manager import TokenExpiredError
 from config import (
     GENAI_READ_TIMEOUT,
     GENAI_REQUEST_TIMEOUT,
@@ -16,6 +19,33 @@ from config import (
     model_registry,
 )
 from errors import make_error_chunk
+
+
+_TOKEN_EXPIRED_MARKERS = ("Token失效", "token失效", "请重新登录", "登录已过期")
+
+
+def _try_parse_sse_line(raw):
+    if raw is None:
+        return None
+    s = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+    if s.startswith("data:"):
+        s = s[5:].strip()
+    if not s or s == "[DONE]":
+        return None
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        return None
+
+
+def _is_upstream_token_expired(genai_json):
+    if not isinstance(genai_json, dict) or genai_json.get("success") is not False:
+        return False
+    msg = genai_json.get("message") or ""
+    if any(marker in msg for marker in _TOKEN_EXPIRED_MARKERS):
+        return True
+    lower = msg.lower()
+    return "token" in lower and ("expired" in lower or "invalid" in lower)
 from model_config.registry import (
     get_genai_id,
     get_root_ai_type,
@@ -381,7 +411,6 @@ def stream_genai_response(chat_info, messages, model, max_tokens, config):
         logger.info("Flattening messages to text-only for rootAiType=%s", root_ai_type)
         messages = _flatten_messages_text_only(messages)
 
-    headers = build_genai_headers(token)
     prompt_token_estimate = estimate_messages_token_count(messages)
 
     genai_data = {
@@ -405,52 +434,108 @@ def stream_genai_response(chat_info, messages, model, max_tokens, config):
         preview = (content[:200] + '...') if content and len(content) > 200 else content
         logger.debug("  [%d] role=%s, content=%s", i, role, preview)
 
+    fallback_renew = (
+        getattr(config, "fallback_renew", True)
+        and getattr(config.token_manager, "mode", None) == "credential"
+    )
+
     try:
-        last_exc = None
-        for attempt in range(3):
-            try:
-                response = requests.post(
-                    GENAI_URL,
-                    headers=headers,
-                    json=genai_data,
-                    stream=True,
-                    timeout=GENAI_REQUEST_TIMEOUT
-                )
-                last_exc = None
-                break
-            except requests.exceptions.ConnectionError as e:
-                last_exc = e
-                if attempt < 2:
-                    wait = 2 ** attempt
-                    logger.warning(
-                        "Connection error (attempt %d/3), retrying in %ds: %s",
-                        attempt + 1, wait, str(e)[:120]
+        response = None
+        first_line = None
+        token_renew_attempted = False
+        while True:
+            headers = build_genai_headers(token)
+
+            last_exc = None
+            for attempt in range(3):
+                try:
+                    response = requests.post(
+                        GENAI_URL,
+                        headers=headers,
+                        json=genai_data,
+                        stream=True,
+                        timeout=GENAI_REQUEST_TIMEOUT
                     )
-                    time.sleep(wait)
-        if last_exc is not None:
-            raise last_exc
+                    last_exc = None
+                    break
+                except requests.exceptions.ConnectionError as e:
+                    last_exc = e
+                    if attempt < 2:
+                        wait = 2 ** attempt
+                        logger.warning(
+                            "Connection error (attempt %d/3), retrying in %ds: %s",
+                            attempt + 1, wait, str(e)[:120]
+                        )
+                        time.sleep(wait)
+            if last_exc is not None:
+                raise last_exc
 
-        logger.debug("GenAI Response Status: %d", response.status_code)
+            logger.debug("GenAI Response Status: %d", response.status_code)
 
-        if response.status_code == 401:
-            new_token = config.token_manager.force_refresh()
-            if new_token:
-                logger.info("Token refreshed after 401, retrying request")
-                headers = build_genai_headers(new_token)
-                response = requests.post(
-                    GENAI_URL, headers=headers, json=genai_data,
-                    stream=True, timeout=GENAI_REQUEST_TIMEOUT
-                )
+            if response.status_code == 401 and not token_renew_attempted:
+                new_token = config.token_manager.force_refresh()
+                if new_token:
+                    logger.info("Token refreshed after 401, retrying request")
+                    token = new_token
+                    token_renew_attempted = True
+                    response.close()
+                    continue
 
-        if response.status_code != 200:
-            logger.warning("GenAI API error %d: %s", response.status_code, response.text[:500])
-            if response.status_code == 401:
-                yield make_error_chunk("Upstream authentication failed", model)
-            elif response.status_code == 429:
-                yield make_error_chunk("Upstream rate limit exceeded", model)
-            else:
-                yield make_error_chunk(f"Upstream API error: {response.status_code}", model)
-            return
+            if response.status_code != 200:
+                logger.warning("GenAI API error %d: %s", response.status_code, response.text[:500])
+                if response.status_code == 401:
+                    yield make_error_chunk("Upstream authentication failed", model)
+                elif response.status_code == 429:
+                    yield make_error_chunk("Upstream rate limit exceeded", model)
+                else:
+                    yield make_error_chunk(f"Upstream API error: {response.status_code}", model)
+                return
+
+            # Peek the first non-empty SSE line to detect upstream-side token
+            # rejection BEFORE we start yielding chunks. The "Token失效" error
+            # is reported in-band as the first SSE line.
+            line_iter = response.iter_lines()
+            first_line = None
+            for raw in line_iter:
+                if raw:
+                    first_line = raw
+                    break
+
+            first_json = _try_parse_sse_line(first_line)
+            if _is_upstream_token_expired(first_json):
+                err_msg = first_json.get("message", "Token expired")
+                if fallback_renew and not token_renew_attempted:
+                    logger.warning(
+                        "Upstream rejected JWT (%s); force-refreshing and retrying once",
+                        err_msg,
+                    )
+                    response.close()
+                    try:
+                        new_token = config.token_manager.force_refresh()
+                    except (LoginError, TokenExpiredError) as e:
+                        logger.warning("Force refresh failed during fallback renew: %s", e)
+                        yield make_error_chunk(f"Token renew failed: {e}", model)
+                        return
+                    if not new_token:
+                        yield make_error_chunk("Token renew returned empty token", model)
+                        return
+                    token = new_token
+                    token_renew_attempted = True
+                    continue
+                else:
+                    reason = (
+                        "fallback renew disabled" if not fallback_renew
+                        else "already retried once"
+                    )
+                    logger.warning(
+                        "Upstream token expired (%s); not retrying (%s)",
+                        err_msg, reason,
+                    )
+                    yield make_error_chunk(f"Upstream error: {err_msg}", model)
+                    return
+
+            # Not a token-expired error → proceed to normal streaming.
+            break
 
         finished = False
         finish_reason_seen = "stop"
@@ -551,7 +636,9 @@ def stream_genai_response(chat_info, messages, model, max_tokens, config):
 
             return chunks
 
-        line_iter = response.iter_lines()
+        # Re-prepend the peeked first line so it's processed by the normal loop.
+        if first_line is not None:
+            line_iter = itertools.chain([first_line], line_iter)
         for line in line_iter:
             for chunk in process_line(line):
                 yield chunk

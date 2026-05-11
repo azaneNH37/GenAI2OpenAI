@@ -13,6 +13,7 @@ OFFLINE_TESTS = [
     "test_genai_retry.py",
     "test_genai_timeout.py",
     "test_image_content.py",
+    "test_token_fallback_renew.py",
     "test_usage_accounting.py",
 ]
 

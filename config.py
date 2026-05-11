@@ -39,6 +39,7 @@ class Config:
     port: int
     api_key: str | None
     debug: bool
+    fallback_renew: bool = True
 
 
 GENAI_URL = "https://genai.shanghaitech.edu.cn/htk/chat/start/chat"

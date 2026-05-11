@@ -17,6 +17,9 @@ parser.add_argument('--debug', action='store_true',
                     help='Enable debug logging')
 parser.add_argument('--api-key', type=str, default=None,
                     help='API key for client authentication (or set API_KEY env var)')
+parser.add_argument('--disable-fallback-renew', action='store_true',
+                    help='Disable automatic JWT renew+retry when upstream returns "Token失效" '
+                         '(only applies to credential token mode)')
 args = parser.parse_args()
 
 logging.basicConfig(
@@ -38,6 +41,7 @@ config = Config(
     port=args.port,
     api_key=args.api_key or os.environ.get("API_KEY"),
     debug=args.debug,
+    fallback_renew=not args.disable_fallback_renew,
 )
 
 app = create_app(config)
