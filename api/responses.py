@@ -27,6 +27,7 @@ from tools.responses.types import (
     ResponsesResponse,
 )
 from provider.genai import (
+    _extract_text_from_content,
     complete_usage,
     estimate_messages_token_count,
     estimate_token_count,
@@ -64,14 +65,18 @@ def create_response():
         adapter = get_adapter(adapter_name)
         messages = adapter.inject(messages, tools, req.tool_choice)
 
-    chat_info = ""
-    for msg in reversed(messages):
-        if msg.get("role") == "user":
-            chat_info = msg.get("content", "")
-            break
+    chat_info = _extract_text_from_content(
+        next((msg.get("content", "") for msg in reversed(messages) if msg.get("role") == "user"), "")
+    )
 
     if not chat_info:
-        return openai_error("No user message found in input")
+        from provider.genai import _content_has_images
+        has_any_image = any(
+            _content_has_images(msg.get("content", ""))
+            for msg in messages if msg.get("role") == "user"
+        )
+        if not has_any_image:
+            return openai_error("No user message found in input")
 
     if req.stream:
         return _stream_response(req, messages, tools, adapter, chat_info, config)

@@ -116,6 +116,31 @@ def _coerce_content(content):
     if isinstance(content, str):
         return content
     if isinstance(content, list):
+        has_image = any(
+            isinstance(p, dict) and p.get("type") == "input_image"
+            for p in content
+        )
+        if has_image:
+            converted = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                ptype = part.get("type")
+                if ptype == "input_text":
+                    converted.append({"type": "text", "text": part.get("text", "")})
+                elif ptype == "text":
+                    converted.append(part)
+                elif ptype == "input_image":
+                    image_url = part.get("image_url", "")
+                    detail = part.get("detail")
+                    image_part = {
+                        "type": "image_url",
+                        "image_url": {"url": image_url},
+                    }
+                    if detail:
+                        image_part["image_url"]["detail"] = detail
+                    converted.append(image_part)
+            return converted if converted else ""
         return "\n".join(
             part.get("text", "")
             for part in content

@@ -299,13 +299,49 @@ def _drain_post_finish_lines(
             logger.debug("Failed to close GenAI response after usage drain timeout: %s", exc)
 
 
+def _extract_text_from_content(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") in ("text", "input_text"):
+                parts.append(part.get("text", ""))
+        return " ".join(parts).strip()
+    return str(content) if content else ""
+
+
+def _content_has_images(content):
+    if isinstance(content, list):
+        return any(
+            isinstance(part, dict) and part.get("type") in ("image_url", "input_image")
+            for part in content
+        )
+    return False
+
+
+def _flatten_messages_text_only(messages):
+    result = []
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            text_parts = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") in ("text", "input_text"):
+                    text_parts.append(part.get("text", ""))
+            new_msg = dict(msg)
+            new_msg["content"] = " ".join(text_parts).strip()
+            result.append(new_msg)
+        else:
+            result.append(msg)
+    return result
+
+
 def convert_messages_to_genai_format(messages):
-    chat_info = ""
     for msg in reversed(messages):
         if msg.get("role") == "user":
-            chat_info = msg.get("content", "")
-            break
-    return chat_info
+            return _extract_text_from_content(msg.get("content", ""))
+    return ""
 
 
 def extract_content_from_genai(response_data):
@@ -327,11 +363,23 @@ def stream_genai_response(chat_info, messages, model, max_tokens, config):
     if not resolve_model(model):
         record = model_registry.get_models(token).get(model)
     root_ai_type = get_root_ai_type(model, genai_record=record)
+
+    has_image_content = any(
+        _content_has_images(msg.get("content", ""))
+        for msg in messages if msg.get("role") == "user"
+    )
+    if has_image_content:
+        logger.info("Image content detected in messages, rootAiType=%s", root_ai_type)
+
+    if root_ai_type != "azure" and has_image_content:
+        logger.info("Flattening messages to text-only for rootAiType=%s", root_ai_type)
+        messages = _flatten_messages_text_only(messages)
+
     headers = build_genai_headers(token)
     prompt_token_estimate = estimate_messages_token_count(messages)
 
     genai_data = {
-        "chatInfo": "",
+        "chatInfo": chat_info,
         "messages": messages,
         "type": "3",
         "stream": True,
@@ -352,13 +400,29 @@ def stream_genai_response(chat_info, messages, model, max_tokens, config):
         logger.debug("  [%d] role=%s, content=%s", i, role, preview)
 
     try:
-        response = requests.post(
-            GENAI_URL,
-            headers=headers,
-            json=genai_data,
-            stream=True,
-            timeout=60
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                response = requests.post(
+                    GENAI_URL,
+                    headers=headers,
+                    json=genai_data,
+                    stream=True,
+                    timeout=60
+                )
+                last_exc = None
+                break
+            except requests.exceptions.ConnectionError as e:
+                last_exc = e
+                if attempt < 2:
+                    wait = 2 ** attempt
+                    logger.warning(
+                        "Connection error (attempt %d/3), retrying in %ds: %s",
+                        attempt + 1, wait, str(e)[:120]
+                    )
+                    time.sleep(wait)
+        if last_exc is not None:
+            raise last_exc
 
         logger.debug("GenAI Response Status: %d", response.status_code)
 

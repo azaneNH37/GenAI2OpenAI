@@ -61,7 +61,13 @@ def chat_completions():
         chat_info = convert_messages_to_genai_format(messages)
 
         if not chat_info:
-            return openai_error("No user message found in 'messages'")
+            from provider.genai import _content_has_images
+            has_any_image = any(
+                _content_has_images(msg.get("content", ""))
+                for msg in messages if msg.get("role") == "user"
+            )
+            if not has_any_image:
+                return openai_error("No user message found in 'messages'")
 
         if stream:
             if has_tools:
