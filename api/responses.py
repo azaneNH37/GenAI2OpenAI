@@ -1,9 +1,14 @@
 import json
+import logging
 import time
 import uuid
 from dataclasses import asdict
 
 from flask import Blueprint, Response, jsonify, request, stream_with_context, current_app
+
+from api.chat import _log_raw_request
+
+logger = logging.getLogger(__name__)
 
 from errors import openai_error
 from model_config.registry import select_tool_adapter
@@ -48,6 +53,8 @@ def create_response():
 
     try:
         body = request.get_json() or {}
+        if logger.isEnabledFor(logging.DEBUG):
+            _log_raw_request(logger, f"req_{uuid.uuid4().hex[:16]}", "/v1/responses", body)
         req = parse_responses_request(body)
     except ValueError as exc:
         return openai_error(str(exc))

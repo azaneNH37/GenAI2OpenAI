@@ -4,14 +4,37 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+_IMAGE_PART_TYPES = ("image_url", "input_image")
+_TEXT_PART_TYPES = ("text", "input_text")
+
+
 def _normalize_content(content):
-    if isinstance(content, list):
-        parts = []
+    if not isinstance(content, list):
+        return content
+
+    has_image = any(
+        isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES
+        for p in content
+    )
+    if has_image:
+        kept = []
         for part in content:
-            if isinstance(part, dict) and part.get("type") == "text":
-                parts.append(str(part.get("text", "")))
-        return "".join(parts)
-    return content
+            if not isinstance(part, dict):
+                continue
+            ptype = part.get("type")
+            if ptype in _IMAGE_PART_TYPES:
+                kept.append(part)
+            elif ptype in _TEXT_PART_TYPES:
+                text = part.get("text", "")
+                if text:
+                    kept.append({"type": "text", "text": str(text)})
+        return kept
+
+    parts = []
+    for part in content:
+        if isinstance(part, dict) and part.get("type") in _TEXT_PART_TYPES:
+            parts.append(str(part.get("text", "")))
+    return "".join(parts)
 
 
 def normalize_messages(messages):

@@ -23,6 +23,72 @@ logger = logging.getLogger(__name__)
 chat_bp = Blueprint('chat', __name__)
 
 
+def _summarize_part(part, max_text=300, max_url=120):
+    if not isinstance(part, dict):
+        return {"_raw_type": type(part).__name__, "_repr": repr(part)[:max_text]}
+    ptype = part.get("type")
+    summary = {"type": ptype, "keys": sorted(part.keys())}
+    if ptype in ("text", "input_text", "output_text"):
+        text = part.get("text", "")
+        summary["text_len"] = len(text) if isinstance(text, str) else None
+        summary["text_preview"] = (text[:max_text] + "...") if isinstance(text, str) and len(text) > max_text else text
+    elif ptype in ("image_url", "input_image"):
+        img = part.get("image_url") or part.get("image") or {}
+        url = img.get("url") if isinstance(img, dict) else (img if isinstance(img, str) else None)
+        if url is None:
+            url = part.get("url") or part.get("data") or part.get("source")
+        if isinstance(url, str):
+            summary["image_scheme"] = url.split(":", 1)[0] if ":" in url else "unknown"
+            summary["image_url_len"] = len(url)
+            summary["image_url_preview"] = url[:max_url]
+        else:
+            summary["image_raw"] = repr(url)[:max_text]
+        if isinstance(img, dict) and "detail" in img:
+            summary["detail"] = img["detail"]
+    else:
+        summary["raw_preview"] = repr(part)[:max_text]
+    return summary
+
+
+def _summarize_content(content):
+    if isinstance(content, str):
+        return {"kind": "str", "len": len(content), "preview": content[:300]}
+    if isinstance(content, list):
+        return {
+            "kind": "list",
+            "n_parts": len(content),
+            "parts": [_summarize_part(p) for p in content],
+        }
+    return {"kind": type(content).__name__, "repr": repr(content)[:300]}
+
+
+def _log_raw_request(log, request_id, endpoint, body):
+    if not isinstance(body, dict):
+        log.debug("[%s] %s raw body type=%s repr=%s",
+                  request_id, endpoint, type(body).__name__, repr(body)[:500])
+        return
+    top_keys = sorted(body.keys())
+    log.debug("[%s] %s top-level keys: %s", request_id, endpoint, top_keys)
+    for k, v in body.items():
+        if k == "messages" or k == "input":
+            continue
+        log.debug("[%s]   %s = %s", request_id, k, repr(v)[:300])
+    messages = body.get("messages") or body.get("input") or []
+    if not isinstance(messages, list):
+        log.debug("[%s] messages is not a list: type=%s", request_id, type(messages).__name__)
+        return
+    log.debug("[%s] === %d message(s) ===", request_id, len(messages))
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            log.debug("[%s] msg[%d] not a dict: %s", request_id, i, repr(msg)[:300])
+            continue
+        role = msg.get("role")
+        extra_keys = [k for k in msg.keys() if k not in ("role", "content")]
+        content_summary = _summarize_content(msg.get("content", ""))
+        log.debug("[%s] msg[%d] role=%s extra_keys=%s content=%s",
+                  request_id, i, role, extra_keys, content_summary)
+
+
 @chat_bp.route('/v1/chat/completions', methods=['POST'])
 def chat_completions():
     config = current_app.config["APP_CONFIG"]
@@ -36,6 +102,9 @@ def chat_completions():
 
     try:
         req_data = request.get_json()
+
+        if logger.isEnabledFor(logging.DEBUG):
+            _log_raw_request(logger, request_id, "/v1/chat/completions", req_data)
 
         if not req_data or 'messages' not in req_data:
             return openai_error("Missing 'messages' field in request body")
