@@ -125,6 +125,12 @@ def _parse_glm_tool_call_body(raw):
                 arguments = {"raw": args_str}
         return {"name": name, "arguments": arguments}, "xml"
 
+    # 零参函数: <tool_call>get_time</tool_call>
+    if raw and "<" not in raw and "\n" not in raw and len(raw) < 128:
+        candidate = raw.strip()
+        if candidate and all(ch.isalnum() or ch in "_-." for ch in candidate):
+            return {"name": candidate, "arguments": {}}, "name_only"
+
     return None, "parse_failed"
 
 
