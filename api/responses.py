@@ -11,7 +11,7 @@ from api.chat import _log_raw_request
 logger = logging.getLogger(__name__)
 
 from errors import openai_error
-from model_config.registry import select_tool_adapter
+from model_config.registry import parse_model_override, select_tool_adapter
 from tools.adapters import get_adapter
 from tools.responses.input import (
     convert_responses_tools,
@@ -68,9 +68,13 @@ def create_response():
     adapter = None
 
     if has_tools:
-        adapter_name = select_tool_adapter(req.model, genai_record=None)
+        clean_model, suffix_override = parse_model_override(req.model)
+        header_override = (request.headers.get("X-Tool-Adapter") or "").strip().lower() or None
+        adapter_override = header_override or suffix_override
+        adapter_name = adapter_override or select_tool_adapter(clean_model, genai_record=None)
         adapter = get_adapter(adapter_name)
         messages = adapter.inject(messages, tools, req.tool_choice)
+        req.model = clean_model
 
     chat_info = _extract_text_from_content(
         next((msg.get("content", "") for msg in reversed(messages) if msg.get("role") == "user"), "")

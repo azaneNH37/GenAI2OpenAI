@@ -208,3 +208,6 @@ __marimo__/
 
 #Agents
 opencode.json
+
+# Benchmark outputs
+bench/results/

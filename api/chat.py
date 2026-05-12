@@ -7,7 +7,7 @@ from datetime import datetime
 from flask import Blueprint, current_app, request, jsonify, stream_with_context, Response
 
 from errors import openai_error
-from model_config.registry import select_tool_adapter
+from model_config.registry import parse_model_override, select_tool_adapter
 from tools.adapters import get_adapter
 from provider.genai import (
     complete_usage,
@@ -110,20 +110,25 @@ def chat_completions():
             return openai_error("Missing 'messages' field in request body")
 
         messages = req_data.get('messages', [])
-        model = req_data.get('model', 'gpt-3.5-turbo')
+        raw_model = req_data.get('model', 'gpt-3.5-turbo')
         stream = req_data.get('stream', False)
         max_tokens = req_data.get('max_tokens', 30000)
         tools = req_data.get('tools', None)
         tool_choice = req_data.get('tool_choice', None)
 
+        # 支持 model@adapter 后缀 + X-Tool-Adapter header 强制覆盖适配器
+        model, suffix_override = parse_model_override(raw_model)
+        header_override = (request.headers.get("X-Tool-Adapter") or "").strip().lower() or None
+        adapter_override = header_override or suffix_override
+
         has_tools = tools and len(tools) > 0
 
-        logger.info("[%s] model=%s stream=%s tools=%s messages=%d",
-                     request_id, model, stream, bool(has_tools), len(messages))
+        logger.info("[%s] model=%s stream=%s tools=%s messages=%d adapter_override=%s",
+                     request_id, model, stream, bool(has_tools), len(messages), adapter_override)
 
         adapter = None
         if has_tools:
-            adapter_name = select_tool_adapter(model, genai_record=None)
+            adapter_name = adapter_override or select_tool_adapter(model, genai_record=None)
             adapter = get_adapter(adapter_name)
             messages = adapter.inject(messages, tools, tool_choice)
 

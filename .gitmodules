@@ -1,3 +1,6 @@
 [submodule "third-party/ollama"]
 	path = third-party/ollama
 	url = https://github.com/ollama/ollama.git
+[submodule "bench/gorilla"]
+	path = bench/gorilla
+	url = https://github.com/ShishirPatil/gorilla.git

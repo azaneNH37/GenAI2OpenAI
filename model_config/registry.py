@@ -34,6 +34,9 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         tool_adapter="generic",
         supports_reasoning=True,
     ),
+    # 实测：上海科大 GenAI 平台部署的 deepseek-chat/deepseek-pro 不识别 DSML 协议
+    # （benchmark 里 deepseek_v4 适配器 0%，generic 92%）。默认走 generic，
+    # 想试 DSML 仍可通过 model@deepseek_v4 后缀临时启用。
     "deepseek-v4-flash": ModelSpec(
         public_id="deepseek-v4-flash",
         genai_id="deepseek-chat",
@@ -55,6 +58,7 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         tool_adapter="generic",
         supports_reasoning=True,
     ),
+    # 实测 minimax 适配器(88%)略低于 generic(90%)；保留专属适配器但默认 generic。
     "minimax-m1": ModelSpec(
         public_id="minimax-m1",
         genai_id="MiniMax-M1",
@@ -89,8 +93,23 @@ for _alias, _target in _EXTRA_ALIASES.items():
         _ALIAS_MAP[_alias.lower()] = spec
 
 
+def parse_model_override(model_id: str | None) -> tuple[str | None, str | None]:
+    """支持 ``model@adapter`` 语法以临时切换 tool adapter（用于 benchmark / 调试）。
+
+    例如 ``deepseek-v4-flash@generic`` 表示用 deepseek-v4-flash 模型但强制使用
+    generic 适配器。返回 ``(纯净 model_id, adapter_override 或 None)``。
+    """
+    if not model_id or "@" not in model_id:
+        return model_id, None
+    base, _, override = model_id.rpartition("@")
+    base = base.strip() or model_id
+    override = override.strip().lower() or None
+    return base, override
+
+
 def resolve_model(model_id: str | None) -> ModelSpec | None:
-    return _ALIAS_MAP.get((model_id or "").lower())
+    base, _ = parse_model_override(model_id)
+    return _ALIAS_MAP.get((base or "").lower())
 
 
 def get_genai_id(model_id: str) -> str:
@@ -108,11 +127,16 @@ def get_root_ai_type(model_id: str, genai_record: dict | None = None) -> str:
 
 
 def select_tool_adapter(model_id: str, genai_record: dict | None = None) -> str:
+    _, override = parse_model_override(model_id)
+    if override:
+        return override
     spec = resolve_model(model_id)
     if spec:
         return spec.tool_adapter
 
     text = _build_model_text(model_id, genai_record)
+    # 仅 GLM 保留专属适配器（实测有正向收益）；deepseek / minimax 实测无收益或负收益，
+    # 走 generic。如需启用专属适配器，使用 model@deepseek_v4 / model@minimax 后缀。
     if "chatglm" in text or ("glm" in text and "xinference" in text):
         return "glm"
     return "generic"
