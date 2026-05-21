@@ -16,10 +16,9 @@ uv run main.py --token "<sid>@<pw>"        # run (auto CAS login + refresh)
 uv run main.py --token "eyJ..."            # run with raw JWT (no auto-refresh)
 uv run main.py --token ... --debug         # verbose logging
 uv run main.py --token ... --api-key K     # require client API key
-uv run main.py --token ... --model-mapping '{"mapping":{"gpt-5-codex":"deepseek-pro"}}'
 uv run --env-file .env main.py --token ...  # load env vars from file
 
-If `MODEL_MAPPING` / `--model-mapping` is not set, no extra model aliases are added.
+If `Config.model_mapping` is not set, no extra model aliases are added. Use `--config '{"mapping":{...}}'` to provide it.
 
 uv run tests/run_offline.py                # all offline tests (no server needed)
 uv run python tests/test_tool_calling.py   # single test file

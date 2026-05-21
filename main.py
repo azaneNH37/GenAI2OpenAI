@@ -1,5 +1,4 @@
 import argparse
-import json
 import logging
 import os
 import sys
@@ -27,7 +26,7 @@ parser.add_argument('--claude-sonnet-model', type=str, default=os.environ.get("C
                     help='GenAI model mapped from Claude sonnet requests')
 parser.add_argument('--claude-opus-model', type=str, default=os.environ.get("CLAUDE_OPUS_MODEL", "gpt-5.5"),
                     help='GenAI model mapped from Claude opus requests')
-parser.add_argument('--model-mapping', type=str, default=os.environ.get("MODEL_MAPPING", ""),
+parser.add_argument('--config', type=str, default=os.environ.get("CONFIG", ""),
                     help='JSON like {"mapping":{"gpt-5-codex":"deepseek-pro"}}')
 args = parser.parse_args()
 
@@ -45,22 +44,6 @@ except (LoginError, ValueError) as e:
     logger.error("Failed to initialize token: %s", e)
     sys.exit(1)
 
-model_mapping: dict[str, str] = {}
-if args.model_mapping.strip():
-    try:
-        raw_mapping = json.loads(args.model_mapping)
-        mapping = raw_mapping.get("mapping") if isinstance(raw_mapping, dict) else None
-        if not isinstance(mapping, dict):
-            raise ValueError("model mapping JSON must contain a 'mapping' object")
-        model_mapping = {
-            str(key): str(value)
-            for key, value in mapping.items()
-            if str(key).strip() and str(value).strip()
-        }
-    except Exception as exc:
-        logger.error("Invalid model mapping JSON: %s", exc)
-        sys.exit(1)
-
 config = Config(
     token_manager=token_manager,
     port=args.port,
@@ -70,7 +53,6 @@ config = Config(
     claude_haiku_model=args.claude_haiku_model,
     claude_sonnet_model=args.claude_sonnet_model,
     claude_opus_model=args.claude_opus_model,
-    model_mapping=model_mapping,
 )
 
 app = create_app(config)
