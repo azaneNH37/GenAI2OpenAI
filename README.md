@@ -224,6 +224,8 @@ docker run -d -p 5000:5000 ghcr.io/hebezang/genai2openai:main --token "202400000
 uv sync
 ```
 
+`uv` 会自动创建并管理 `.venv`，后续统一用 `uv run` 执行命令。
+
 ### 启动服务
 
 ```bash
@@ -235,6 +237,20 @@ uv run main.py --token "eyJ..."
 
 # 完整参数
 uv run main.py --token <token> [--port 5000] [--api-key <key>] [--debug]
+```
+
+用户自定义模型映射：
+
+```bash
+uv run main.py --token "..." --model-mapping '{"mapping":{"gpt-5-codex":"deepseek-pro"}}'
+```
+
+未配置 `--model-mapping` 时，不会自动添加任何模型别名。
+
+也可以把环境变量放进 `.env`，然后这样启动：
+
+```bash
+uv run --env-file .env main.py --token "2024000001@mypassword"
 ```
 
 | 参数        | 说明                                              | 默认值       |

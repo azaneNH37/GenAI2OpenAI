@@ -255,6 +255,28 @@ class UsageAccountingTests(unittest.TestCase):
             "total_tokens": 8,
         })
 
+    def test_stream_responses_emits_content_part_events(self):
+        def fake_stream(*_args, **_kwargs):
+            yield 'data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}\n\n'
+            yield (
+                'data: {"choices":[{"delta":{},"finish_reason":"stop"}],'
+                '"usage":{"prompt_tokens":6,"completion_tokens":2,"total_tokens":8}}\n\n'
+            )
+            yield "data: [DONE]\n\n"
+
+        with patch("api.responses.stream_genai_response", side_effect=fake_stream):
+            response = _app().test_client().post("/v1/responses", json={
+                "model": "deepseek-v4-pro",
+                "input": "hello",
+                "stream": True,
+            }, buffered=True)
+
+        self.assertEqual(response.status_code, 200)
+        events = _sse_json_events(response.get_data(as_text=True))
+        types = [event.get("type") for event in events]
+        self.assertIn("response.content_part.added", types)
+        self.assertIn("response.content_part.done", types)
+
 
 if __name__ == "__main__":
     unittest.main()

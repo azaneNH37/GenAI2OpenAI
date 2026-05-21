@@ -46,7 +46,35 @@ def _is_upstream_token_expired(genai_json):
         return True
     lower = msg.lower()
     return "token" in lower and ("expired" in lower or "invalid" in lower)
+
+
+def _is_upstream_business_error(genai_json):
+    if not isinstance(genai_json, dict):
+        return False
+    if genai_json.get("success") is False:
+        return True
+    code = genai_json.get("code")
+    if isinstance(code, int) and code >= 400:
+        return True
+    if "errMsg" in genai_json or "message" in genai_json:
+        if isinstance(code, int) and code >= 400:
+            return True
+        if "errMsg" in genai_json and genai_json.get("errMsg"):
+            return True
+    return False
+
+
+def _upstream_business_error_message(genai_json):
+    if not isinstance(genai_json, dict):
+        return "Upstream error"
+    return (
+        genai_json.get("errMsg")
+        or genai_json.get("message")
+        or genai_json.get("err_msg")
+        or "Upstream error"
+    )
 from model_config.registry import (
+    apply_model_mapping,
     get_genai_id,
     get_root_ai_type,
     resolve_model,
@@ -394,6 +422,7 @@ def extract_content_from_genai(response_data):
 
 def stream_genai_response(chat_info, messages, model, max_tokens, config):
     token = config.token_manager.get_token()
+    model = apply_model_mapping(model, getattr(config, "model_mapping", {})) or model
     genai_id = get_genai_id(model)
     record = None
     if not resolve_model(model):
@@ -591,8 +620,8 @@ def stream_genai_response(chat_info, messages, model, max_tokens, config):
                 logger.debug("JSON decode error: %s, line: %s", e, line_str[:200])
                 return []
 
-            if isinstance(genai_json, dict) and genai_json.get("success") is False:
-                err_msg = genai_json.get("message", "Unknown upstream error")
+            if _is_upstream_business_error(genai_json):
+                err_msg = _upstream_business_error_message(genai_json)
                 err_code = genai_json.get("code", 500)
                 logger.warning("GenAI business error (code=%s): %s", err_code, err_msg)
                 abort_stream = True
@@ -685,6 +714,7 @@ def stream_genai_response_with_tools(
     adapter,
     tools=None,
 ):
+    model = apply_model_mapping(model, getattr(config, "model_mapping", {})) or model
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(datetime.now().timestamp())
 

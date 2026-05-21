@@ -17,6 +17,9 @@ class TokenManager:
     def __init__(self, token_input: str):
         self._lock = threading.Lock()
         self._jwt: str | None = None
+        self._client_options: dict = {}
+
+        token_input = self._split_client_options(token_input)
 
         # JWT format: 3 dot-separated segments
         if token_input.count(".") == 2:
@@ -36,6 +39,47 @@ class TokenManager:
             self._student_id = parts[0]
             self._password = parts[1]
             logger.info("Token mode: credential (student_id=%s)", self._student_id)
+
+    @property
+    def client_options(self) -> dict:
+        return dict(self._client_options)
+
+    @property
+    def model_mapping(self) -> dict[str, str]:
+        mapping = self._client_options.get("mapping", {})
+        if not isinstance(mapping, dict):
+            return {}
+
+        normalized: dict[str, str] = {}
+        for key, value in mapping.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                continue
+            key = key.strip()
+            value = value.strip()
+            if not key or not value:
+                continue
+            normalized[key.lower()] = value
+        return normalized
+
+    def _split_client_options(self, token_input: str) -> str:
+        if not token_input.startswith("{"):
+            return token_input
+
+        decoder = json.JSONDecoder()
+        try:
+            options, end = decoder.raw_decode(token_input)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid token options JSON prefix: {exc}") from exc
+
+        if not isinstance(options, dict):
+            raise ValueError("Token options prefix must be a JSON object")
+
+        remainder = token_input[end:].lstrip()
+        if not remainder.startswith("@"):
+            raise ValueError("Token options prefix must be followed by '@'")
+
+        self._client_options = options
+        return remainder[1:].lstrip()
 
     @property
     def mode(self) -> str:

@@ -5,6 +5,7 @@ from flask import Blueprint, current_app, jsonify, g
 from auth.cas_login import LoginError
 from auth.token_manager import TokenExpiredError
 from config import model_registry
+from model_config.registry import MODEL_SPECS
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +45,16 @@ def list_models():
     if err is not None:
         raise err
 
+    combined = dict(models_map or {})
+    for spec in MODEL_SPECS.values():
+        combined.setdefault(spec.public_id, spec)
+
+    config = current_app.config["APP_CONFIG"]
+    for public_id, genai_id in getattr(config, "model_mapping", {}).items():
+        combined.setdefault(public_id, _MappedModel(public_id, genai_id))
+
     models = []
-    for model_id, info in (models_map or {}).items():
+    for model_id, info in combined.items():
         models.append({
             "id": model_id,
             "object": "model",
@@ -53,3 +62,12 @@ def list_models():
             "permission": []
         })
     return jsonify({"object": "list", "data": models})
+
+
+class _MappedModel:
+    def __init__(self, public_id: str, genai_id: str):
+        self.id = public_id
+        self.name = public_id
+        self.root_ai_type = "mapped"
+        self.max_tokens = None
+        self.description = f"mapped to {genai_id}"

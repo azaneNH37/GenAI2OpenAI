@@ -40,6 +40,10 @@ class Config:
     api_key: str | None
     debug: bool
     fallback_renew: bool = True
+    claude_haiku_model: str = "qwen-instruct"
+    claude_sonnet_model: str = "gpt-4.1"
+    claude_opus_model: str = "gpt-5.5"
+    model_mapping: dict[str, str] = field(default_factory=dict)
 
 
 GENAI_URL = "https://genai.shanghaitech.edu.cn/htk/chat/start/chat"

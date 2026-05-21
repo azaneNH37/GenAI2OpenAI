@@ -7,7 +7,7 @@ from datetime import datetime
 from flask import Blueprint, current_app, request, jsonify, stream_with_context, Response
 
 from errors import openai_error
-from model_config.registry import parse_model_override, select_tool_adapter
+from model_config.registry import apply_model_mapping, parse_model_override, select_tool_adapter
 from tools.adapters import get_adapter
 from provider.genai import (
     complete_usage,
@@ -118,6 +118,7 @@ def chat_completions():
 
         # 支持 model@adapter 后缀 + X-Tool-Adapter header 强制覆盖适配器
         model, suffix_override = parse_model_override(raw_model)
+        model = apply_model_mapping(model, getattr(config, "model_mapping", {})) or model
         header_override = (request.headers.get("X-Tool-Adapter") or "").strip().lower() or None
         adapter_override = header_override or suffix_override
 

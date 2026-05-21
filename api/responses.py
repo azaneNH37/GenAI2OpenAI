@@ -11,7 +11,7 @@ from api.chat import _log_raw_request
 logger = logging.getLogger(__name__)
 
 from errors import openai_error
-from model_config.registry import parse_model_override, select_tool_adapter
+from model_config.registry import apply_model_mapping, parse_model_override, select_tool_adapter
 from tools.adapters import get_adapter
 from tools.responses.input import (
     convert_responses_tools,
@@ -47,6 +47,35 @@ def _serialize_response(response_obj: ResponsesResponse) -> dict:
     return {k: v for k, v in asdict(response_obj).items() if v is not None}
 
 
+def _build_responses_usage(response_usage, *, messages, complete_content, complete_reasoning=""):
+    usage = complete_usage(
+        response_usage,
+        prompt_tokens=estimate_messages_token_count(messages),
+        completion_tokens=estimate_token_count(complete_content),
+        reasoning_tokens=estimate_token_count(complete_reasoning) or None,
+    )
+    input_tokens = usage.get("prompt_tokens") or estimate_messages_token_count(messages)
+    reasoning_tokens = estimate_token_count(complete_reasoning) or 0
+    output_tokens = (usage.get("completion_tokens") or estimate_token_count(complete_content)) + reasoning_tokens
+    usage["input_tokens"] = input_tokens
+    usage["output_tokens"] = output_tokens
+    usage["total_tokens"] = input_tokens + output_tokens
+    return usage
+
+
+def _is_error_chunk(data):
+    if not isinstance(data, dict):
+        return False
+    choices = data.get("choices")
+    if not choices:
+        return False
+    delta = choices[0].get("delta", {}) if isinstance(choices[0], dict) else {}
+    content = delta.get("content")
+    if isinstance(content, str) and content.startswith("[Error]"):
+        return True
+    return choices[0].get("finish_reason") == "error"
+
+
 @responses_bp.route("/v1/responses", methods=["POST"])
 def create_response():
     config = current_app.config["APP_CONFIG"]
@@ -69,6 +98,7 @@ def create_response():
 
     if has_tools:
         clean_model, suffix_override = parse_model_override(req.model)
+        clean_model = apply_model_mapping(clean_model, getattr(config, "model_mapping", {})) or clean_model
         header_override = (request.headers.get("X-Tool-Adapter") or "").strip().lower() or None
         adapter_override = header_override or suffix_override
         adapter_name = adapter_override or select_tool_adapter(clean_model, genai_record=None)
@@ -151,11 +181,11 @@ def create_response():
         model=req.model,
         output=output_items,
         output_text=output_text,
-        usage=complete_usage(
+        usage=_build_responses_usage(
             response_usage,
-            prompt_tokens=estimate_messages_token_count(messages),
-            completion_tokens=estimate_token_count(complete_content),
-            reasoning_tokens=estimate_token_count(complete_reasoning) or None,
+            messages=messages,
+            complete_content=complete_content,
+            complete_reasoning=complete_reasoning,
         ),
     )
 
@@ -200,8 +230,8 @@ def _stream_response(req, messages, tools, adapter, chat_info, config):
     response_id = f"resp_{uuid.uuid4().hex}"
     created_at = int(time.time())
 
-    def event(data):
-        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+    def event(event_type, data):
+        return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
     def generate():
         response_stub = {
@@ -212,14 +242,21 @@ def _stream_response(req, messages, tools, adapter, chat_info, config):
             "model": req.model,
             "output": [],
             "output_text": "",
+            "usage": {
+                "input_tokens": estimate_messages_token_count(messages),
+                "output_tokens": 0,
+                "total_tokens": estimate_messages_token_count(messages),
+            },
         }
-        yield event({"type": "response.created", "response": response_stub})
+        yield event("response.created", {"type": "response.created", "response": response_stub})
+        yield event("response.in_progress", {"type": "response.in_progress", "response": response_stub})
 
         complete_content = ""
         complete_reasoning = ""
         response_usage = None
         tool_calls = None
         remaining_text = ""
+        upstream_error = None
 
         if tools and adapter:
             current_tool_calls = {}
@@ -240,6 +277,9 @@ def _stream_response(req, messages, tools, adapter, chat_info, config):
                         data = json.loads(data_str)
                     except json.JSONDecodeError:
                         continue
+                    if _is_error_chunk(data):
+                        upstream_error = data
+                        break
                     if isinstance(data.get("usage"), dict):
                         response_usage = data["usage"]
 
@@ -265,6 +305,8 @@ def _stream_response(req, messages, tools, adapter, chat_info, config):
                             if func.get("arguments"):
                                 current["function"]["arguments"] = func.get("arguments")
                             current_tool_calls[call_id] = current
+                if upstream_error:
+                    break
 
             if current_tool_calls:
                 tool_calls = list(current_tool_calls.values())
@@ -281,6 +323,9 @@ def _stream_response(req, messages, tools, adapter, chat_info, config):
                         data = json.loads(data_str)
                     except json.JSONDecodeError:
                         continue
+                    if _is_error_chunk(data):
+                        upstream_error = data
+                        break
                     if isinstance(data.get("usage"), dict):
                         response_usage = data["usage"]
 
@@ -323,11 +368,11 @@ def _stream_response(req, messages, tools, adapter, chat_info, config):
             model=req.model,
             output=output_items,
             output_text=output_text,
-            usage=complete_usage(
+            usage=_build_responses_usage(
                 response_usage,
-                prompt_tokens=estimate_messages_token_count(messages),
-                completion_tokens=estimate_token_count(complete_content),
-                reasoning_tokens=estimate_token_count(complete_reasoning) or None,
+                messages=messages,
+                complete_content=complete_content,
+                complete_reasoning=complete_reasoning,
             ),
         )
 
@@ -336,17 +381,52 @@ def _stream_response(req, messages, tools, adapter, chat_info, config):
             store_history(response_id, messages + [assistant_turn])
             store_response(response_id, _serialize_response(response_obj))
 
+        if upstream_error:
+            err_text = ""
+            choices = upstream_error.get("choices") or []
+            if choices:
+                delta = choices[0].get("delta", {})
+                err_text = delta.get("content", "")
+            serialized_response = _serialize_response(response_obj)
+            serialized_response.setdefault("usage", {})
+            serialized_response["usage"].setdefault("input_tokens", estimate_messages_token_count(messages))
+            yield event("response.failed", {
+                "type": "response.failed",
+                "response_id": response_id,
+                "error": {
+                    "type": "upstream_error",
+                    "message": err_text or "Upstream error",
+                },
+                "response": serialized_response,
+            })
+            yield "data: [DONE]\n\n"
+            return
+
         for index, item in enumerate(output_items):
-            yield event({
+            item_in_progress = asdict(item)
+            item_in_progress["status"] = "in_progress"
+            yield event("response.output_item.added", {
                 "type": "response.output_item.added",
                 "response_id": response_id,
                 "output_index": index,
-                "item": asdict(item),
+                "item": item_in_progress,
             })
 
         if output_text:
             msg_item = output_items[0]
-            yield event({
+            yield event("response.content_part.added", {
+                "type": "response.content_part.added",
+                "response_id": response_id,
+                "item_id": msg_item.id,
+                "output_index": 0,
+                "content_index": 0,
+                "part": {
+                    "type": "output_text",
+                    "text": "",
+                    "annotations": [],
+                },
+            })
+            yield event("response.output_text.delta", {
                 "type": "response.output_text.delta",
                 "response_id": response_id,
                 "item_id": msg_item.id,
@@ -354,7 +434,7 @@ def _stream_response(req, messages, tools, adapter, chat_info, config):
                 "content_index": 0,
                 "delta": output_text,
             })
-            yield event({
+            yield event("response.output_text.done", {
                 "type": "response.output_text.done",
                 "response_id": response_id,
                 "item_id": msg_item.id,
@@ -362,9 +442,21 @@ def _stream_response(req, messages, tools, adapter, chat_info, config):
                 "content_index": 0,
                 "text": output_text,
             })
+            yield event("response.content_part.done", {
+                "type": "response.content_part.done",
+                "response_id": response_id,
+                "item_id": msg_item.id,
+                "output_index": 0,
+                "content_index": 0,
+                "part": {
+                    "type": "output_text",
+                    "text": output_text,
+                    "annotations": [],
+                },
+            })
         elif tool_calls:
             for index, item in enumerate(output_items):
-                yield event({
+                yield event("response.function_call_arguments.done", {
                     "type": "response.function_call_arguments.done",
                     "response_id": response_id,
                     "item_id": item.id,
@@ -375,14 +467,14 @@ def _stream_response(req, messages, tools, adapter, chat_info, config):
                 })
 
         for index, item in enumerate(output_items):
-            yield event({
+            yield event("response.output_item.done", {
                 "type": "response.output_item.done",
                 "response_id": response_id,
                 "output_index": index,
                 "item": asdict(item),
             })
 
-        yield event({"type": "response.completed", "response": _serialize_response(response_obj)})
+        yield event("response.completed", {"type": "response.completed", "response": _serialize_response(response_obj)})
         yield "data: [DONE]\n\n"
 
     return Response(stream_with_context(generate()), mimetype="text/event-stream")

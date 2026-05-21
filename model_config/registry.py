@@ -107,6 +107,17 @@ def parse_model_override(model_id: str | None) -> tuple[str | None, str | None]:
     return base, override
 
 
+def apply_model_mapping(model_id: str | None, mapping: dict[str, str] | None) -> str | None:
+    if not model_id or not mapping:
+        return model_id
+
+    base, override = parse_model_override(model_id)
+    mapped_base = mapping.get(base or "", base or model_id)
+    if override:
+        return f"{mapped_base}@{override}"
+    return mapped_base
+
+
 def resolve_model(model_id: str | None) -> ModelSpec | None:
     base, _ = parse_model_override(model_id)
     return _ALIAS_MAP.get((base or "").lower())
