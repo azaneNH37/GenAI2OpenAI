@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import os
 import sys
@@ -37,6 +38,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+_config_json = {}
+if args.config and args.config.strip():
+    try:
+        _config_json = json.loads(args.config)
+    except json.JSONDecodeError as e:
+        logger.error("Invalid --config JSON: %s", e)
+        sys.exit(1)
+
 try:
     token_manager = TokenManager(args.token)
     token_manager.initial_login()
@@ -53,6 +62,7 @@ config = Config(
     claude_haiku_model=args.claude_haiku_model,
     claude_sonnet_model=args.claude_sonnet_model,
     claude_opus_model=args.claude_opus_model,
+    model_mapping=_config_json.get("mapping", {}),
 )
 
 app = create_app(config)
